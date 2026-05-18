@@ -1,0 +1,21 @@
+:root {
+  background: transparent !important;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: transparent !important;
+  background-color: transparent !important;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#svelte, body > div {
+  background: transparent !important;
+}
+
+* {
+  box-sizing: border-box;
+}

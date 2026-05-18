@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <link rel="icon" href="%sveltekit.assets%/favicon.png" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Socrate</title>
+  <style>
+    html { background: transparent !important; background-color: rgba(0,0,0,0) !important; }
+    body { background: transparent !important; background-color: rgba(0,0,0,0) !important;
+           margin: 0 !important; padding: 0 !important;
+           width: 100vw; height: 100vh; overflow: hidden;
+           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #fff; }
+    #app, body > div, body > main { background: transparent !important; }
+    :root { color-scheme: only light; background: transparent !important; }
+  </style>
+  %sveltekit.head%
+</head>
+<body>
+<div style="display: contents">%sveltekit.body%</div>
+</body>
+</html>
