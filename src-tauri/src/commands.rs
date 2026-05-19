@@ -10,7 +10,7 @@ use tauri::State;
 
 use crate::overlay::InteractiveRect;
 use crate::sdk::SdkI;
-use crate::state::{AppState, RobloxBounds, ZoneInput};
+use crate::state::{AimbotCfg, AppState, RobloxBounds, VisualsCfg, ZoneInput};
 
 #[tauri::command]
 pub fn get_roblox_bounds(state: State<AppState>) -> Option<RobloxBounds> {
@@ -56,4 +56,14 @@ pub fn sdk_status(state: State<AppState>) -> Option<(String, u64, u64)> {
     let sdk = state.sdk.lock().unwrap().clone()?;
     let (ok, fail) = sdk.read_stats();
     Some((format!("0x{:X}", sdk.base), ok, fail))
+}
+
+#[tauri::command]
+pub fn set_aimbot_config(state: State<AppState>, cfg: AimbotCfg) {
+    *state.aimbot_cfg.lock().unwrap() = cfg;
+}
+
+#[tauri::command]
+pub fn set_visuals_config(state: State<AppState>, cfg: VisualsCfg) {
+    *state.visuals_cfg.lock().unwrap() = cfg;
 }

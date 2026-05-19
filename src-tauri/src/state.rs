@@ -11,7 +11,172 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::overlay::InteractiveRect;
+use crate::players::CharCache;
 use crate::sdk::SdkI;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct AimbotCfg {
+    // Core
+    pub enabled: bool,
+    pub keybind: String,
+    pub aim_type: String,
+    pub smoothing: f32,
+    pub fov_radius: f32,
+    pub show_fov: bool,
+    pub fill_fov: bool,
+    pub fov_color: String,
+    pub fov_fill_color: String,
+    pub part: String,
+
+    // Prediction
+    pub prediction_enabled: bool,
+    pub prediction_strength: f32,
+    pub velocity_prediction: bool,
+    pub bullet_drop_comp: bool,
+    pub gravity_comp: f32,
+
+    // Targeting filters
+    pub selection_mode: String,
+    pub wall_check: bool,
+    pub min_distance: f32,
+    pub max_distance: f32,
+    pub team_check: bool,
+
+    // Trigger bot
+    pub trigger_enabled: bool,
+    pub trigger_delay: f32,
+    pub trigger_keybind: String,
+    pub trigger_burst: bool,
+
+    // Legit
+    pub legit_enabled: bool,
+    pub legit_miss: f32,
+    pub humanize: bool,
+    pub smooth_path: bool,
+}
+
+impl Default for AimbotCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keybind: "MouseRight".into(),
+            aim_type: "Mouse".into(),
+            smoothing: 0.85,
+            fov_radius: 150.0,
+            show_fov: false,
+            fill_fov: false,
+            fov_color: "#ffde9d".into(),
+            fov_fill_color: "#ffde9d".into(),
+            part: "Head".into(),
+
+            prediction_enabled: false,
+            prediction_strength: 1.0,
+            velocity_prediction: true,
+            bullet_drop_comp: false,
+            gravity_comp: 0.0,
+
+            selection_mode: "Distance".into(),
+            wall_check: false,
+            min_distance: 0.0,
+            max_distance: 400.0,
+            team_check: true,
+
+            trigger_enabled: false,
+            trigger_delay: 50.0,
+            trigger_keybind: "MouseLeft".into(),
+            trigger_burst: false,
+
+            legit_enabled: false,
+            legit_miss: 0.3,
+            humanize: false,
+            smooth_path: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct VisualsCfg {
+    pub outline: bool,
+
+    pub skeleton: bool,
+    pub skeleton_color: String,
+    pub skeleton_thickness: f32,
+
+    pub box2d: bool,
+    pub box2d_color: String,
+    pub box2d_fill: bool,
+    pub box2d_fill_color: String,
+    pub box2d_thickness: f32,
+
+    pub box3d: bool,
+    pub box3d_color: String,
+    pub box3d_fill: bool,
+    pub box3d_fill_color: String,
+    pub box3d_thickness: f32,
+
+    pub tracers: bool,
+    pub tracers_color: String,
+    pub tracers_origin: String,
+    pub tracers_thickness: f32,
+
+    pub view_dir: bool,
+    pub view_dir_color: String,
+    pub view_dir_length: f32,
+
+    pub names: bool,
+    pub names_color: String,
+    pub distance: bool,
+    pub distance_color: String,
+    pub health: bool,
+    pub health_color: String,
+    pub health_bar: bool,
+    pub health_bar_color: String,
+
+    pub team_check: bool,
+    pub show_self: bool,
+    pub max_distance: f32,
+}
+
+impl Default for VisualsCfg {
+    fn default() -> Self {
+        Self {
+            outline: true,
+            skeleton: true,
+            skeleton_color: "#ffffff".into(),
+            skeleton_thickness: 1.5,
+            box2d: false,
+            box2d_color: "#ffffff".into(),
+            box2d_fill: false,
+            box2d_fill_color: "#ffffff".into(),
+            box2d_thickness: 1.5,
+            box3d: false,
+            box3d_color: "#ffffff".into(),
+            box3d_fill: false,
+            box3d_fill_color: "#ffffff".into(),
+            box3d_thickness: 1.5,
+            tracers: false,
+            tracers_color: "#ffffff".into(),
+            tracers_origin: "Bottom".into(),
+            tracers_thickness: 1.5,
+            view_dir: false,
+            view_dir_color: "#ffffff".into(),
+            view_dir_length: 6.0,
+            names: false,
+            names_color: "#ffffff".into(),
+            distance: false,
+            distance_color: "#ffffff".into(),
+            health: false,
+            health_color: "#ffffff".into(),
+            health_bar: false,
+            health_bar_color: "#ffffff".into(),
+            team_check: true,
+            show_self: false,
+            max_distance: 1500.0,
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RobloxBounds {
@@ -43,6 +208,13 @@ pub struct AppState {
 
     /// Lazy: filled when `attach_sdk` succeeds.
     pub sdk: Mutex<Option<Arc<SdkI>>>,
+
+    /// Built off-thread by `players::start_char_cache_thread`. The ESP loop
+    /// only clones this Arc each frame (atomic refcount bump).
+    pub char_caches: Mutex<Arc<Vec<CharCache>>>,
+
+    pub aimbot_cfg: Mutex<AimbotCfg>,
+    pub visuals_cfg: Mutex<VisualsCfg>,
 }
 
 impl Default for AppState {
@@ -52,6 +224,9 @@ impl Default for AppState {
             roblox_ever_seen: AtomicBool::new(false),
             interactive_zones: Mutex::new(Vec::new()),
             sdk: Mutex::new(None),
+            char_caches: Mutex::new(Arc::new(Vec::new())),
+            aimbot_cfg: Mutex::new(AimbotCfg::default()),
+            visuals_cfg: Mutex::new(VisualsCfg::default()),
         }
     }
 }

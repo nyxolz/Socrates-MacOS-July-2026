@@ -1,0 +1,191 @@
+<script lang="ts">
+    import { onMount, onDestroy } from "svelte";
+    import { invoke } from "@tauri-apps/api/core";
+    import { activeTab } from "./stores";
+    import { startConfigBridge } from "./bridge";
+    import TabBar from "./TabBar.svelte";
+    import Aiming from "./tabs/Aiming.svelte";
+    import Visuals from "./tabs/Visuals.svelte";
+    import Empty from "./tabs/Empty.svelte";
+    import Icon from "./controls/Icon.svelte";
+    import "./tokens.css";
+
+    let menuEl: HTMLDivElement;
+    let headerEl: HTMLDivElement;
+    let resizeObs: ResizeObserver | undefined;
+    let stopBridge: (() => void) | undefined;
+
+    // Portrait shape — wide enough for a 2-column body, tall enough to fill
+    // most of the Roblox window. Width is fixed; height is `85vh` clamped.
+    let pos = { x: 24, y: 24 };
+    const MENU_W = 490;
+    let menuH = 0;
+
+    let dragging = false;
+    let dragOffset = { x: 0, y: 0 };
+    let activePointerId = -1;
+
+    async function pushZone() {
+        if (!menuEl) return;
+        const r = menuEl.getBoundingClientRect();
+        menuH = r.height;
+        await invoke("set_interactive_zones", {
+            zones: [{ x: r.left, y: r.top, w: r.width, h: r.height }],
+        });
+    }
+
+    function clampToViewport() {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        pos.x = Math.max(0, Math.min(pos.x, w - MENU_W));
+        pos.y = Math.max(0, Math.min(pos.y, h - menuH));
+        pos = pos;
+    }
+
+    function onPointerDown(e: PointerEvent) {
+        if (e.button !== 0) return;
+        const r = menuEl.getBoundingClientRect();
+        dragOffset.x = e.clientX - r.left;
+        dragOffset.y = e.clientY - r.top;
+        dragging = true;
+        activePointerId = e.pointerId;
+        // Capture so the drag survives the cursor briefly leaving the header
+        // even though the rest of the window is click-through.
+        headerEl.setPointerCapture(e.pointerId);
+        e.preventDefault();
+    }
+
+    function onPointerMove(e: PointerEvent) {
+        if (!dragging || e.pointerId !== activePointerId) return;
+        pos.x = e.clientX - dragOffset.x;
+        pos.y = e.clientY - dragOffset.y;
+        clampToViewport();
+        pushZone();
+    }
+
+    function onPointerUp(e: PointerEvent) {
+        if (e.pointerId !== activePointerId) return;
+        dragging = false;
+        activePointerId = -1;
+        try { headerEl.releasePointerCapture(e.pointerId); } catch {}
+        pushZone();
+    }
+
+    onMount(() => {
+        pushZone();
+        resizeObs = new ResizeObserver(pushZone);
+        resizeObs.observe(menuEl);
+        window.addEventListener("resize", () => { clampToViewport(); pushZone(); });
+        stopBridge = startConfigBridge();
+    });
+
+    onDestroy(() => {
+        resizeObs?.disconnect();
+        stopBridge?.();
+    });
+</script>
+
+<div
+    bind:this={menuEl}
+    class="socrate-menu window"
+    style="left: {pos.x}px; top: {pos.y}px; width: {MENU_W}px;"
+>
+    <div
+        bind:this={headerEl}
+        class="header"
+        class:dragging
+        on:pointerdown={onPointerDown}
+        on:pointermove={onPointerMove}
+        on:pointerup={onPointerUp}
+        on:pointercancel={onPointerUp}
+    >
+        <span class="brand">Socrate</span>
+        <span class="version">v0.1.0</span>
+        <span class="spacer"></span>
+        <button class="iconbtn" title="Minimize" on:click|stopPropagation={() => {}}>
+            <Icon name="minus" size={11} />
+        </button>
+        <button class="iconbtn" title="Close" on:click|stopPropagation={() => invoke("panic_exit")}>
+            <Icon name="x" size={11} />
+        </button>
+    </div>
+
+    <TabBar />
+
+    <div class="body">
+        {#if $activeTab === "Aiming"}
+            <Aiming />
+        {:else if $activeTab === "Visuals"}
+            <Visuals />
+        {:else}
+            <Empty name={$activeTab} />
+        {/if}
+    </div>
+</div>
+
+<style>
+    .window {
+        position: fixed;
+        height: 85vh;
+        min-height: 420px;
+        max-height: 900px;
+        background: var(--bg-window);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        pointer-events: auto;
+        will-change: left, top;
+    }
+    .header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px 6px 10px;
+        background: var(--bg-window-edge);
+        border-bottom: 1px solid var(--border);
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+    }
+    .header.dragging { cursor: grabbing; }
+    .brand {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        color: var(--text);
+    }
+    .version {
+        font-size: 9px;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+    }
+    .spacer { flex: 1; }
+    .iconbtn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: var(--radius-small);
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+    .iconbtn:hover {
+        background: var(--bg-tab-active);
+        color: var(--text);
+        border-color: var(--border);
+    }
+    .body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        background: var(--bg-window);
+    }
+    .body::-webkit-scrollbar { width: 6px; }
+    .body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>

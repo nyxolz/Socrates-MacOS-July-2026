@@ -8,12 +8,18 @@ mod sdk;
 mod overlay;
 mod state;
 mod commands;
+mod players;
+mod esp;
+mod aimbot;
 
 use std::ptr;
 
 use tauri::Manager;
 
+use crate::aimbot::start_aimbot_thread;
+use crate::esp::start_esp_thread;
 use crate::overlay::{setup_window_overlay, start_mouse_tracker, start_window_tracker};
+use crate::players::start_char_cache_thread;
 use crate::state::AppState;
 
 /// `ptrace(PT_DENY_ATTACH)` — refuses lldb / debuggers from latching on.
@@ -39,6 +45,9 @@ pub fn run() {
 
             start_window_tracker(window.clone(), app.handle().clone());
             start_mouse_tracker(window, app.handle().clone());
+            start_char_cache_thread(app.handle().clone());
+            start_esp_thread(app.handle().clone());
+            start_aimbot_thread(app.handle().clone());
 
             Ok(())
         })
@@ -49,6 +58,8 @@ pub fn run() {
             commands::panic_exit,
             commands::attach_sdk,
             commands::sdk_status,
+            commands::set_aimbot_config,
+            commands::set_visuals_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
