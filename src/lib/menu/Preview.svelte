@@ -108,35 +108,64 @@
     const DIST = 42;
     const HP = 87;
 
+    // Anchor → box-edge pixel coordinates (preview-space).
+    function boxAnchorX(a: "L" | "C" | "R"): number {
+        return a === "L" ? BOX.x : a === "R" ? BOX.x + BOX.w : BOX.x + BOX.w / 2;
+    }
+    function boxAnchorY(a: "T" | "C" | "B"): number {
+        return a === "T" ? BOX.y : a === "B" ? BOX.y + BOX.h : BOX.y + BOX.h / 2;
+    }
+    function pickAnchorX(px: number): "L" | "C" | "R" {
+        const f = (px - BOX.x) / BOX.w;
+        return f < 0.33 ? "L" : f > 0.66 ? "R" : "C";
+    }
+    function pickAnchorY(py: number): "T" | "C" | "B" {
+        const f = (py - BOX.y) / BOX.h;
+        return f < 0.33 ? "T" : f > 0.66 ? "B" : "C";
+    }
+
     let dragging: string | null = null;
     let activePointer = -1;
-    let dragStart = { x: 0, y: 0, ox: 0, oy: 0 };
+    let dragStart = { cx: 0, cy: 0, stageLeft: 0, stageTop: 0 };
 
     function startDrag(kind: "name" | "distance" | "health", e: PointerEvent) {
         e.stopPropagation();
         e.preventDefault();
         dragging = kind;
         activePointer = e.pointerId;
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-        const v = $visuals;
-        const ox = kind === "name" ? v.names_offset_x
-                 : kind === "distance" ? v.distance_offset_x
-                 : v.health_offset_x;
-        const oy = kind === "name" ? v.names_offset_y
-                 : kind === "distance" ? v.distance_offset_y
-                 : v.health_offset_y;
-        dragStart = { x: e.clientX, y: e.clientY, ox, oy };
+        const target = e.currentTarget as HTMLElement;
+        target.setPointerCapture(e.pointerId);
+        const stage = target.parentElement as HTMLElement;
+        const sr = stage.getBoundingClientRect();
+        const lr = target.getBoundingClientRect();
+        // Offset between label center and the cursor at grab — keeps the
+        // label from snapping under the pointer when drag starts.
+        dragStart = {
+            cx: (lr.left + lr.width / 2) - e.clientX,
+            cy: (lr.top + lr.height / 2) - e.clientY,
+            stageLeft: sr.left,
+            stageTop: sr.top,
+        };
     }
     function onMove(e: PointerEvent) {
         if (!dragging || e.pointerId !== activePointer) return;
-        const dx = e.clientX - dragStart.x;
-        const dy = e.clientY - dragStart.y;
-        const nx = dragStart.ox + dx;
-        const ny = dragStart.oy + dy;
+        const px = (e.clientX + dragStart.cx) - dragStart.stageLeft;
+        const py = (e.clientY + dragStart.cy) - dragStart.stageTop;
+        const ax = pickAnchorX(px);
+        const ay = pickAnchorY(py);
+        const ox = px - boxAnchorX(ax);
+        const oy = py - boxAnchorY(ay);
         visuals.update(v => {
-            if (dragging === "name") { v.names_offset_x = nx; v.names_offset_y = ny; }
-            else if (dragging === "distance") { v.distance_offset_x = nx; v.distance_offset_y = ny; }
-            else if (dragging === "health") { v.health_offset_x = nx; v.health_offset_y = ny; }
+            if (dragging === "name") {
+                v.names_anchor_x = ax; v.names_anchor_y = ay;
+                v.names_offset_x = ox; v.names_offset_y = oy;
+            } else if (dragging === "distance") {
+                v.distance_anchor_x = ax; v.distance_anchor_y = ay;
+                v.distance_offset_x = ox; v.distance_offset_y = oy;
+            } else if (dragging === "health") {
+                v.health_anchor_x = ax; v.health_anchor_y = ay;
+                v.health_offset_x = ox; v.health_offset_y = oy;
+            }
             return v;
         });
     }
@@ -147,9 +176,15 @@
         activePointer = -1;
     }
 
-    $: nameStyle = `left: ${headPx.x + $visuals.names_offset_x}px;    top: ${headPx.y + $visuals.names_offset_y}px;    color: ${$visuals.names_color};`;
-    $: distStyle = `left: ${headPx.x + $visuals.distance_offset_x}px; top: ${headPx.y + $visuals.distance_offset_y}px; color: ${$visuals.distance_color};`;
-    $: hpStyle   = `left: ${headPx.x + $visuals.health_offset_x}px;   top: ${headPx.y + $visuals.health_offset_y}px;   color: ${$visuals.health_color};`;
+    $: nameX = boxAnchorX($visuals.names_anchor_x) + $visuals.names_offset_x;
+    $: nameY = boxAnchorY($visuals.names_anchor_y) + $visuals.names_offset_y;
+    $: distX = boxAnchorX($visuals.distance_anchor_x) + $visuals.distance_offset_x;
+    $: distY = boxAnchorY($visuals.distance_anchor_y) + $visuals.distance_offset_y;
+    $: hpX   = boxAnchorX($visuals.health_anchor_x)   + $visuals.health_offset_x;
+    $: hpY   = boxAnchorY($visuals.health_anchor_y)   + $visuals.health_offset_y;
+    $: nameStyle = `left: ${nameX}px; top: ${nameY}px; color: ${$visuals.names_color};`;
+    $: distStyle = `left: ${distX}px; top: ${distY}px; color: ${$visuals.distance_color};`;
+    $: hpStyle   = `left: ${hpX}px;   top: ${hpY}px;   color: ${$visuals.health_color};`;
 </script>
 
 <div class="stage" style="width: {W}px; height: {H}px;">

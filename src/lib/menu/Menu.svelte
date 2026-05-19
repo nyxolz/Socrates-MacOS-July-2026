@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { invoke } from "@tauri-apps/api/core";
-    import { activeTab, theme } from "./stores";
+    import { activeTab, theme, menuOptions } from "./stores";
     import { startConfigBridge } from "./bridge";
     import TabBar from "./TabBar.svelte";
     import Aiming from "./tabs/Aiming.svelte";
@@ -44,15 +44,30 @@
     let dragging = false;
     let dragOffset = { x: 0, y: 0 };
     let activePointerId = -1;
+    let minimized = false;
+
+    function toggleMinimize() {
+        minimized = !minimized;
+        // The ResizeObserver picks up the new geometry and re-pushes the
+        // interactive zone; no explicit pushZone() needed here.
+    }
 
     async function pushZone() {
-        if (!menuEl) return;
+        if (!menuEl || !$menuOptions.menu_visible) {
+            // Clear the click-through zone so the overlay stops eating
+            // clicks behind the (hidden) menu.
+            await invoke("set_interactive_zones", { zones: [] }).catch(() => {});
+            return;
+        }
         const r = menuEl.getBoundingClientRect();
         menuH = r.height;
         await invoke("set_interactive_zones", {
             zones: [{ x: r.left, y: r.top, w: r.width, h: r.height }],
         });
     }
+
+    // Re-push (or clear) the zone whenever visibility flips.
+    $: if (typeof window !== "undefined") { void $menuOptions.menu_visible; pushZone(); }
 
     function clampToViewport() {
         const w = window.innerWidth;
@@ -108,6 +123,8 @@
 <div
     bind:this={menuEl}
     class="socrate-menu window"
+    class:hidden={!$menuOptions.menu_visible}
+    class:minimized
     style="left: {pos.x}px; top: {pos.y}px; width: {MENU_W}px; {themeStyle}"
 >
     <div
@@ -122,33 +139,37 @@
         <span class="brand">Socrate</span>
         <span class="version">v0.1.2 (Beta Release) https://usesocrate.xyz/</span>
         <span class="spacer"></span>
-        <button class="iconbtn" title="Minimize" on:click|stopPropagation={() => {}}>
-            <Icon name="minus" size={11} />
+        <button class="iconbtn" title={minimized ? "Restore" : "Minimize"}
+                on:click|stopPropagation={toggleMinimize}
+                on:pointerdown|stopPropagation>
+            <Icon name={minimized ? "plus" : "minus"} size={11} />
         </button>
         <button class="iconbtn" title="Close" on:click|stopPropagation={() => invoke("panic_exit")}>
             <Icon name="x" size={11} />
         </button>
     </div>
 
-    <TabBar />
+    {#if !minimized}
+        <TabBar />
 
-    <div class="body">
-        {#if $activeTab === "Aiming"}
-            <Aiming />
-        {:else if $activeTab === "Visuals"}
-            <Visuals />
-        {:else if $activeTab === "Output"}
-            <Output />
-        {:else if $activeTab === "Options"}
-            <Options />
-        {:else if $activeTab === "Player List"}
-            <PlayerList />
-        {:else if $activeTab === "Explorer"}
-            <Explorer />
-        {:else if $activeTab === "Servers"}
-            <Servers />
-        {/if}
-    </div>
+        <div class="body">
+            {#if $activeTab === "Aiming"}
+                <Aiming />
+            {:else if $activeTab === "Visuals"}
+                <Visuals />
+            {:else if $activeTab === "Output"}
+                <Output />
+            {:else if $activeTab === "Options"}
+                <Options />
+            {:else if $activeTab === "Player List"}
+                <PlayerList />
+            {:else if $activeTab === "Explorer"}
+                <Explorer />
+            {:else if $activeTab === "Servers"}
+                <Servers />
+            {/if}
+        </div>
+    {/if}
 </div>
 
 <style>
@@ -166,6 +187,15 @@
         overflow: hidden;
         pointer-events: auto;
         will-change: left, top;
+    }
+    .window.hidden {
+        display: none;
+    }
+    /* Minimized: only the header is visible, height collapses to fit. */
+    .window.minimized {
+        height: auto;
+        min-height: 0;
+        max-height: none;
     }
     .header {
         display: flex;

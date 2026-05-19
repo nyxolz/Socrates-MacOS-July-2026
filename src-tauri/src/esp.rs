@@ -179,6 +179,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
             let caches = state.char_caches.lock().unwrap().clone();
             let visuals = state.visuals_cfg.lock().unwrap().clone();
             let max_dist = visuals.max_distance;
+            let min_dist = visuals.min_distance.max(0.0);
 
             let mut players: Vec<EspPlayer> = Vec::with_capacity(caches.len());
             for cache in caches.iter() {
@@ -204,6 +205,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                 let dy = anchor[1] - cam_pos[1];
                 let dz = anchor[2] - cam_pos[2];
                 let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+                if distance < min_dist { continue; }
                 if distance > max_dist { continue; }
 
                 // Health (Humanoid + 0x184). -1 sentinel if read garbage.

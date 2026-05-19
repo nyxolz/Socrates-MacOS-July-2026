@@ -217,18 +217,51 @@ pub fn build_char_cache(sdk: &SdkI, char_addr: u64, humanoid_addr: u64) -> Optio
 }
 
 /// Walk Workspace direct children and keep the ones that have a `Humanoid`.
-pub fn discover_characters(sdk: &SdkI, workspace: u64) -> Vec<CharCache> {
+/// `local_name` (the username of the local player) is filtered out — both
+/// ESP and aimbot pull from the cache this builds, so excluding self here
+/// is the single point of truth.
+pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> Vec<CharCache> {
     let mut caches = Vec::new();
     let workspace_children = get_children(sdk, workspace);
     let humanoid_name = obfstr!("Humanoid").to_string();
     for c in workspace_children.into_iter().take(200) {
         let humanoid = find_child_fast(sdk, c, &humanoid_name);
         if !sdk.is_valid_ptr(humanoid) { continue; }
+        // Each character in Workspace is named after its owning player; the
+        // local player's character shares the LocalPlayer.Name we resolved
+        // through DataModel → Players → first child.
+        if !local_name.is_empty() && read_name_fast(sdk, c) == local_name { continue; }
         if let Some(cache) = build_char_cache(sdk, c, humanoid) {
             caches.push(cache);
         }
     }
     caches
+}
+
+/// First child of `Players` is the LocalPlayer (Roblox convention — the
+/// local player is inserted first on join). Its `Name` is the local user's
+/// username, which we then strip from the char cache.
+pub fn resolve_local_player_name(sdk: &SdkI) -> String {
+    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
+    if !sdk.is_valid_ptr(fdm) { return String::new(); }
+    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
+    if !sdk.is_valid_ptr(dm) { return String::new(); }
+    let players = find_child_fast(sdk, dm, obfstr!("Players").as_ref());
+    if !sdk.is_valid_ptr(players) { return String::new(); }
+    let container = sdk.read::<u64>(players + Instance::ChildrenList as u64);
+    if !sdk.is_valid_ptr(container) { return String::new(); }
+    let array_begin = sdk.read::<u64>(container);
+    let array_end = sdk.read::<u64>(container + 8);
+    if !sdk.is_valid_ptr(array_begin) || array_end <= array_begin { return String::new(); }
+    let count = ((array_end - array_begin) / 8).min(2000);
+    for i in 0..count {
+        let child = sdk.read::<u64>(array_begin + i * 8);
+        if !sdk.is_valid_ptr(child) { continue; }
+        if sdk.read::<u64>(child + Instance::Parent as u64) != players { continue; }
+        let name = read_name_fast(sdk, child);
+        if !name.is_empty() { return name; }
+    }
+    String::new()
 }
 
 // ─── Off-thread cache rebuild ─────────────────────────────────────────
@@ -243,7 +276,9 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
             let sdk_opt = state.sdk.lock().unwrap().clone();
             if let Some(sdk) = sdk_opt {
                 if let Some(workspace) = resolve_workspace(&sdk) {
-                    let caches = discover_characters(&sdk, workspace);
+                    let local_name = resolve_local_player_name(&sdk);
+                    *state.local_player_name.lock().unwrap() = local_name.clone();
+                    let caches = discover_characters(&sdk, workspace, &local_name);
                     *state.char_caches.lock().unwrap() = Arc::new(caches);
                 }
             }

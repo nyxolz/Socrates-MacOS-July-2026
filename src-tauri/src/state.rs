@@ -127,14 +127,20 @@ pub struct VisualsCfg {
 
     pub names: bool,
     pub names_color: String,
+    pub names_anchor_x: String,
+    pub names_anchor_y: String,
     pub names_offset_x: f32,
     pub names_offset_y: f32,
     pub distance: bool,
     pub distance_color: String,
+    pub distance_anchor_x: String,
+    pub distance_anchor_y: String,
     pub distance_offset_x: f32,
     pub distance_offset_y: f32,
     pub health: bool,
     pub health_color: String,
+    pub health_anchor_x: String,
+    pub health_anchor_y: String,
     pub health_offset_x: f32,
     pub health_offset_y: f32,
     pub health_bar: bool,
@@ -143,18 +149,19 @@ pub struct VisualsCfg {
     pub team_check: bool,
     pub show_self: bool,
     pub max_distance: f32,
+    pub min_distance: f32,
 }
 
 impl Default for VisualsCfg {
     fn default() -> Self {
         Self {
             outline: true,
-            skeleton: true,
+            skeleton: false,
             skeleton_color: "#ffffff".into(),
             skeleton_thickness: 1.5,
-            box2d: false,
+            box2d: true,
             box2d_color: "#ffffff".into(),
-            box2d_fill: false,
+            box2d_fill: true,
             box2d_fill_color: "#ffffff".into(),
             box2d_thickness: 1.5,
             box3d: false,
@@ -171,21 +178,28 @@ impl Default for VisualsCfg {
             view_dir_length: 6.0,
             names: false,
             names_color: "#ffffff".into(),
+            names_anchor_x: "C".into(),
+            names_anchor_y: "T".into(),
             names_offset_x: 0.0,
-            names_offset_y: -14.0,
+            names_offset_y: -4.0,
             distance: false,
             distance_color: "#ffffff".into(),
+            distance_anchor_x: "C".into(),
+            distance_anchor_y: "B".into(),
             distance_offset_x: 0.0,
-            distance_offset_y: 22.0,
+            distance_offset_y: 4.0,
             health: false,
             health_color: "#ffffff".into(),
+            health_anchor_x: "C".into(),
+            health_anchor_y: "B".into(),
             health_offset_x: 0.0,
-            health_offset_y: 34.0,
+            health_offset_y: 16.0,
             health_bar: false,
             health_bar_color: "#ffffff".into(),
             team_check: true,
             show_self: false,
             max_distance: 1500.0,
+            min_distance: 3.0,
         }
     }
 }
@@ -204,6 +218,16 @@ pub struct ZoneInput {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+}
+
+/// Pure-frontend menu UI options that the backend only needs to *read* (so
+/// it can poll the global hotkey that toggles menu visibility).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct MenuOptionsCfg {
+    pub menu_visible: bool,
+    pub toggle_bind: String,
+    pub snow_enabled: bool,
 }
 
 pub struct AppState {
@@ -227,6 +251,12 @@ pub struct AppState {
 
     pub aimbot_cfg: Mutex<AimbotCfg>,
     pub visuals_cfg: Mutex<VisualsCfg>,
+    pub menu_toggle_bind: Mutex<String>,
+
+    /// LocalPlayer.Name — resolved every cache rebuild from
+    /// `DataModel → Players → first child`. Used to filter self out of the
+    /// ESP / aimbot / player-list pipelines. Empty string until resolved.
+    pub local_player_name: Mutex<String>,
 
     /// Char_addr of the player currently being spectated. 0 = off.
     pub spectate_target: Mutex<u64>,
@@ -242,6 +272,8 @@ impl Default for AppState {
             char_caches: Mutex::new(Arc::new(Vec::new())),
             aimbot_cfg: Mutex::new(AimbotCfg::default()),
             visuals_cfg: Mutex::new(VisualsCfg::default()),
+            menu_toggle_bind: Mutex::new("Home".into()),
+            local_player_name: Mutex::new(String::new()),
             spectate_target: Mutex::new(0),
         }
     }

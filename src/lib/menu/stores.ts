@@ -113,6 +113,8 @@ export const aimbot: Writable<AimbotCfg> = writable({
 });
 
 export type TracerOrigin = "Top" | "Center" | "Bottom";
+export type LabelAnchorX = "L" | "C" | "R";
+export type LabelAnchorY = "T" | "C" | "B";
 
 export type VisualsCfg = {
     // Global
@@ -148,18 +150,25 @@ export type VisualsCfg = {
     view_dir_color: string;
     view_dir_length: number;   // studs
 
-    // Text — offsets are pixel deltas from the head anchor; dragging in
-    // the Preview rewrites these values live.
+    // Text — anchored to a 2-D box edge so labels stay box-relative
+    // (e.g. "below the box") regardless of player distance. Anchor picks
+    // the edge (L/C/R for X, T/C/B for Y); offset is pixel delta from it.
     names: boolean;
     names_color: string;
+    names_anchor_x: LabelAnchorX;
+    names_anchor_y: LabelAnchorY;
     names_offset_x: number;
     names_offset_y: number;
     distance: boolean;
     distance_color: string;
+    distance_anchor_x: LabelAnchorX;
+    distance_anchor_y: LabelAnchorY;
     distance_offset_x: number;
     distance_offset_y: number;
     health: boolean;
     health_color: string;
+    health_anchor_x: LabelAnchorX;
+    health_anchor_y: LabelAnchorY;
     health_offset_x: number;
     health_offset_y: number;
     health_bar: boolean;
@@ -169,18 +178,22 @@ export type VisualsCfg = {
     team_check: boolean;
     show_self: boolean;
     max_distance: number;
+    /// Skip any character whose distance from the camera is below this —
+    /// a belt+braces self-filter on top of the LocalPlayer.Name match so
+    /// first-person games (camera inside the head) never ESP yourself.
+    min_distance: number;
 };
 
 export const visuals: Writable<VisualsCfg> = writable({
     outline: true,
 
-    skeleton: true,
+    skeleton: false,
     skeleton_color: "#ffffff",
     skeleton_thickness: 1.5,
 
-    box2d: false,
+    box2d: true,
     box2d_color: "#ffffff",
-    box2d_fill: false,
+    box2d_fill: true,
     box2d_fill_color: "#ffffff",
     box2d_thickness: 1.5,
 
@@ -201,20 +214,41 @@ export const visuals: Writable<VisualsCfg> = writable({
 
     names: false,
     names_color: "#ffffff",
+    names_anchor_x: "C",
+    names_anchor_y: "T",
     names_offset_x: 0,
-    names_offset_y: -14,
+    names_offset_y: -4,
     distance: false,
     distance_color: "#ffffff",
+    distance_anchor_x: "C",
+    distance_anchor_y: "B",
     distance_offset_x: 0,
-    distance_offset_y: 22,
+    distance_offset_y: 4,
     health: false,
     health_color: "#ffffff",
+    health_anchor_x: "C",
+    health_anchor_y: "B",
     health_offset_x: 0,
-    health_offset_y: 34,
+    health_offset_y: 16,
     health_bar: false,
     health_bar_color: "#ffffff",
 
     team_check: true,
     show_self: false,
     max_distance: 1500,
+    min_distance: 3,
+});
+
+// Menu UI options — purely frontend, not synced to backend. `menu_visible`
+// is flipped by a global keybind; while visible, the overlay dims the game
+// and rains theme-coloured snow flakes for fun.
+export type MenuOptionsCfg = {
+    menu_visible: boolean;
+    toggle_bind: string;
+    snow_enabled: boolean;
+};
+export const menuOptions: Writable<MenuOptionsCfg> = writable({
+    menu_visible: true,
+    toggle_bind: "Home",
+    snow_enabled: true,
 });

@@ -72,6 +72,11 @@ pub fn set_visuals_config(state: State<AppState>, cfg: VisualsCfg) {
     *state.visuals_cfg.lock().unwrap() = cfg;
 }
 
+#[tauri::command]
+pub fn set_menu_toggle_bind(state: State<AppState>, bind: String) {
+    *state.menu_toggle_bind.lock().unwrap() = bind;
+}
+
 // ─── Offset health check for the Output tab ─────────────────────────────
 
 /// Returns `true` iff we can chain `Roblox.base → FakeDataModel → DataModel

@@ -96,6 +96,8 @@
         <Section title="Filters" icon="filter">
             <Toggle bind:checked={$visuals.team_check} label="Team check" />
             <Toggle bind:checked={$visuals.show_self} label="Show local player" />
+            <Slider label="Min distance" bind:value={$visuals.min_distance}
+                min={0} max={20} step={0.5} format={(v) => v.toFixed(1) + " s"} />
             <Slider label="Max distance" bind:value={$visuals.max_distance}
                 min={50} max={5000} step={10} format={(v) => v.toFixed(0) + " s"} />
         </Section>

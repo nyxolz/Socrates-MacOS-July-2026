@@ -1,7 +1,9 @@
 <script lang="ts">
-    import { theme, THEME_PRESETS } from "../stores";
+    import { theme, THEME_PRESETS, menuOptions } from "../stores";
     import Section from "../controls/Section.svelte";
     import ColorPicker from "../controls/ColorPicker.svelte";
+    import KeybindInput from "../controls/KeybindInput.svelte";
+    import Toggle from "../controls/Toggle.svelte";
 
     function pick(c: string) { theme.set(c); }
 </script>
@@ -30,7 +32,12 @@
             </div>
         </Section>
     </div>
-    <div class="col"></div>
+    <div class="col">
+        <Section title="Menu" icon="sliders" active>
+            <KeybindInput label="Toggle menu" bind:value={$menuOptions.toggle_bind} />
+            <Toggle label="Snow effect" bind:checked={$menuOptions.snow_enabled} />
+        </Section>
+    </div>
 </div>
 
 <style>

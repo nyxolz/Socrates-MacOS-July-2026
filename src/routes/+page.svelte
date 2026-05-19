@@ -2,7 +2,7 @@
     import { onMount, onDestroy } from "svelte";
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
     import Menu from "$lib/menu/Menu.svelte";
-    import { visuals, aimbot, type VisualsCfg, type AimbotCfg } from "$lib/menu/stores";
+    import { visuals, aimbot, menuOptions, theme, type VisualsCfg, type AimbotCfg, type MenuOptionsCfg } from "$lib/menu/stores";
 
     type Marker = {
         name: string;
@@ -41,8 +41,12 @@
 
     let vcfg: VisualsCfg | null = null;
     let acfg: AimbotCfg | null = null;
+    let mcfg: MenuOptionsCfg | null = null;
+    let themeColor = "#ffde9d";
     visuals.subscribe((v) => { vcfg = v; });
     aimbot.subscribe((a) => { acfg = a; });
+    menuOptions.subscribe((m) => { mcfg = m; });
+    theme.subscribe((t) => { themeColor = t; });
 
     function hexToRgba(hex: string, alpha: number): string {
         const h = hex.replace("#", "");
@@ -50,6 +54,52 @@
         const g = parseInt(h.slice(2, 4), 16) || 0;
         const b = parseInt(h.slice(4, 6), 16) || 0;
         return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    function hexToRgbTriplet(hex: string): string {
+        const h = hex.replace("#", "");
+        const r = parseInt(h.slice(0, 2), 16) || 0;
+        const g = parseInt(h.slice(2, 4), 16) || 0;
+        const b = parseInt(h.slice(4, 6), 16) || 0;
+        return `${r}, ${g}, ${b}`;
+    }
+
+    // Snow particles. `z` ∈ [0,1] is depth — small/slow/dim at z=0 (far),
+    // big/fast/opaque at z=1 (close). Drift = horizontal sway phase.
+    type Snowflake = { x: number; y: number; z: number; sway: number };
+    const SNOW_COUNT = 140;
+    let snow: Snowflake[] = [];
+    let lastSnowTick = 0;
+
+    function makeSnowflake(spawnTop: boolean): Snowflake {
+        return {
+            x: Math.random() * window.innerWidth,
+            y: spawnTop ? -8 - Math.random() * 40 : Math.random() * window.innerHeight,
+            z: Math.random(),
+            sway: Math.random() * Math.PI * 2,
+        };
+    }
+    function initSnow() {
+        snow = Array.from({ length: SNOW_COUNT }, () => makeSnowflake(false));
+    }
+    function drawSnow(ctx: CanvasRenderingContext2D, color: string, dt: number) {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const rgb = hexToRgbTriplet(color);
+        for (const s of snow) {
+            const speed = 25 + s.z * 110;
+            s.y += speed * dt;
+            s.sway += (0.4 + s.z * 0.6) * dt * 2;
+            s.x += Math.sin(s.sway) * (8 + s.z * 14) * dt;
+            if (s.y > h + 8) Object.assign(s, makeSnowflake(true));
+            if (s.x > w + 12) s.x = -12;
+            if (s.x < -12) s.x = w + 12;
+            const radius = 0.8 + s.z * 4.2;
+            const alpha = 0.22 + s.z * 0.7;
+            ctx.fillStyle = `rgba(${rgb}, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
     }
 
     function resizeCanvas() {
@@ -192,8 +242,29 @@
 
     function renderLoop() {
         const ctx = canvas?.getContext("2d");
-        if (ctx && lastFrame && vcfg) {
+        const now = performance.now();
+        const dt = lastSnowTick === 0 ? 0 : Math.min(0.05, (now - lastSnowTick) / 1000);
+        lastSnowTick = now;
+        if (ctx) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Menu-visible decoration: dim the game (rounded rect, 30%
+            // more transparent than before so the game stays readable
+            // behind the menu) and rain themed snow underneath the ESP/UI.
+            if (mcfg?.menu_visible) {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+                ctx.beginPath();
+                if (typeof (ctx as any).roundRect === "function") {
+                    (ctx as any).roundRect(0, 0, w, h, 14);
+                } else {
+                    ctx.rect(0, 0, w, h);
+                }
+                ctx.fill();
+                if (mcfg.snow_enabled) drawSnow(ctx, themeColor, dt);
+            }
+        }
+        if (ctx && lastFrame && vcfg) {
             const cfg = vcfg;
             const outline = cfg.outline;
 
@@ -221,20 +292,37 @@
                     drawHealthBar(ctx, p.box2d, p.health, cfg.health_bar_color, outline);
                 }
                 if (p.head) {
-                    const hp = ndcToScreen(p.head[0], p.head[1]);
+                    // Anchor labels to the projected 2-D box so a "below
+                    // the box" position in the preview stays "below the
+                    // box" for every player regardless of distance. Falls
+                    // back to head pixel if no box was projected.
+                    let bL: number, bR: number, bT: number, bB: number;
+                    if (p.box2d) {
+                        const a = ndcToScreen(p.box2d[0], p.box2d[3]);
+                        const b = ndcToScreen(p.box2d[2], p.box2d[1]);
+                        bL = a.x; bT = a.y; bR = b.x; bB = b.y;
+                    } else {
+                        const hp = ndcToScreen(p.head[0], p.head[1]);
+                        bL = bR = hp.x; bT = bB = hp.y;
+                    }
+                    const ax = (a: string) => a === "L" ? bL : a === "R" ? bR : (bL + bR) / 2;
+                    const ay = (a: string) => a === "T" ? bT : a === "B" ? bB : (bT + bB) / 2;
                     if (cfg.names) {
                         drawText(ctx, p.name || "?",
-                            hp.x + cfg.names_offset_x, hp.y + cfg.names_offset_y,
+                            ax(cfg.names_anchor_x) + cfg.names_offset_x,
+                            ay(cfg.names_anchor_y) + cfg.names_offset_y,
                             cfg.names_color, outline);
                     }
                     if (cfg.distance) {
                         drawText(ctx, `${p.distance.toFixed(0)}m`,
-                            hp.x + cfg.distance_offset_x, hp.y + cfg.distance_offset_y,
+                            ax(cfg.distance_anchor_x) + cfg.distance_offset_x,
+                            ay(cfg.distance_anchor_y) + cfg.distance_offset_y,
                             cfg.distance_color, outline, 10);
                     }
                     if (cfg.health && p.health >= 0) {
                         drawText(ctx, `${p.health.toFixed(0)} hp`,
-                            hp.x + cfg.health_offset_x, hp.y + cfg.health_offset_y,
+                            ax(cfg.health_anchor_x) + cfg.health_offset_x,
+                            ay(cfg.health_anchor_y) + cfg.health_offset_y,
                             cfg.health_color, outline, 10);
                     }
                 }
@@ -256,17 +344,38 @@
         rafHandle = requestAnimationFrame(renderLoop);
     }
 
+    let unlistenToggle: UnlistenFn | undefined;
+
+    function onToggleKey(e: KeyboardEvent) {
+        // Fallback for when the overlay actually has keyboard focus (menu
+        // open, input focused); the Rust thread covers the click-through
+        // case where Roblox owns the focus.
+        const bind = mcfg?.toggle_bind;
+        if (!bind) return;
+        if (e.code === bind || e.key === bind) {
+            e.preventDefault();
+            menuOptions.update(m => ({ ...m, menu_visible: !m.menu_visible }));
+        }
+    }
+
     onMount(async () => {
         resizeCanvas();
+        initSnow();
         window.addEventListener("resize", resizeCanvas);
+        window.addEventListener("keydown", onToggleKey, true);
         unlistenFrame = await listen<EspFrame>("esp_frame", (e) => { lastFrame = e.payload; });
+        unlistenToggle = await listen("menu_toggle", () => {
+            menuOptions.update(m => ({ ...m, menu_visible: !m.menu_visible }));
+        });
         rafHandle = requestAnimationFrame(renderLoop);
     });
 
     onDestroy(() => {
         cancelAnimationFrame(rafHandle);
         unlistenFrame?.();
+        unlistenToggle?.();
         window.removeEventListener("resize", resizeCanvas);
+        window.removeEventListener("keydown", onToggleKey, true);
     });
 </script>
 

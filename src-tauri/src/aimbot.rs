@@ -26,47 +26,11 @@ use crate::security;
 use crate::state::AppState;
 
 unsafe extern "C" {
-    fn CGEventSourceKeyState(state_id: i32, keycode: u16) -> bool;
-    fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
     fn CGWarpMouseCursorPosition(point: CGPoint) -> i32;
     fn CGAssociateMouseAndMouseCursorPosition(connected: i32) -> i32;
 }
-const HID: i32 = 1;
 
-fn mouse_button(s: &str) -> Option<u32> {
-    Some(match s {
-        "MouseLeft" => 0, "MouseRight" => 1, "MouseMiddle" => 2,
-        "Mouse4" => 3, "Mouse5" => 4,
-        _ => return None,
-    })
-}
-
-/// e.code → macOS virtual keycode. Covers the keys a normal aimbot keybind
-/// would use; the rest fall back to "no match" (the keybind is then dead
-/// until the user re-binds with one of these).
-fn key_code(s: &str) -> Option<u16> {
-    Some(match s {
-        "KeyA" => 0, "KeyS" => 1, "KeyD" => 2, "KeyF" => 3,
-        "KeyH" => 4, "KeyG" => 5, "KeyZ" => 6, "KeyX" => 7,
-        "KeyC" => 8, "KeyV" => 9, "KeyB" => 11, "KeyQ" => 12,
-        "KeyW" => 13, "KeyE" => 14, "KeyR" => 15, "KeyY" => 16,
-        "KeyT" => 17, "KeyO" => 31, "KeyU" => 32, "KeyI" => 34,
-        "KeyP" => 35, "KeyL" => 37, "KeyJ" => 38, "KeyK" => 40,
-        "KeyN" => 45, "KeyM" => 46,
-        "Space" => 49, "Tab" => 48, "Enter" => 36, "Escape" => 53,
-        "ShiftLeft" => 56, "ControlLeft" => 59, "AltLeft" => 58, "MetaLeft" => 55,
-        "ShiftRight" => 60, "ControlRight" => 62, "AltRight" => 61,
-        _ => return None,
-    })
-}
-
-fn is_held(bind: &str) -> bool {
-    if let Some(b) = mouse_button(bind) {
-        unsafe { CGEventSourceButtonState(HID, b) }
-    } else if let Some(c) = key_code(bind) {
-        unsafe { CGEventSourceKeyState(HID, c) }
-    } else { false }
-}
+use crate::input::is_held;
 
 fn warp(x: f64, y: f64) {
     unsafe {

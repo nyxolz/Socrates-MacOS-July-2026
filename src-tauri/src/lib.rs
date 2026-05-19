@@ -13,6 +13,8 @@ mod esp;
 mod aimbot;
 mod spectate;
 mod security;
+mod input;
+mod menu_hotkey;
 
 use std::ptr;
 
@@ -20,6 +22,8 @@ use tauri::Manager;
 
 use crate::aimbot::start_aimbot_thread;
 use crate::esp::start_esp_thread;
+use crate::input::start_input_thread;
+use crate::menu_hotkey::start_menu_hotkey_thread;
 use crate::overlay::{setup_window_overlay, start_mouse_tracker, start_window_tracker};
 use crate::players::start_char_cache_thread;
 use crate::security::start_security_thread;
@@ -127,8 +131,10 @@ pub fn run() {
             start_mouse_tracker(window, app.handle().clone());
             start_char_cache_thread(app.handle().clone());
             start_esp_thread(app.handle().clone());
+            start_input_thread(app.handle().clone());
             start_aimbot_thread(app.handle().clone());
             start_spectate_thread(app.handle().clone());
+            start_menu_hotkey_thread(app.handle().clone());
 
             // Background anti-RE watcher: Frida / lldb / sysctl P_TRACED.
             #[cfg(target_os = "macos")]
@@ -145,6 +151,7 @@ pub fn run() {
             commands::sdk_status,
             commands::set_aimbot_config,
             commands::set_visuals_config,
+            commands::set_menu_toggle_bind,
             commands::diag_check,
             commands::list_players,
             commands::set_spectate_target,
