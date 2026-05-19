@@ -1,14 +1,33 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { invoke } from "@tauri-apps/api/core";
-    import { activeTab } from "./stores";
+    import { activeTab, theme } from "./stores";
     import { startConfigBridge } from "./bridge";
     import TabBar from "./TabBar.svelte";
     import Aiming from "./tabs/Aiming.svelte";
     import Visuals from "./tabs/Visuals.svelte";
-    import Empty from "./tabs/Empty.svelte";
+    import Output from "./tabs/Output.svelte";
+    import Options from "./tabs/Options.svelte";
+    import PlayerList from "./tabs/PlayerList.svelte";
+    import Servers from "./tabs/Servers.svelte";
     import Icon from "./controls/Icon.svelte";
     import "./tokens.css";
+
+    function hexToRgba(hex: string, alpha: number): string {
+        const h = hex.replace("#", "");
+        const r = parseInt(h.slice(0, 2), 16) || 0;
+        const g = parseInt(h.slice(2, 4), 16) || 0;
+        const b = parseInt(h.slice(4, 6), 16) || 0;
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    // Theme overrides — applied inline on the root menu element so they win
+    // against the scoped `.socrate-menu` defaults in tokens.css.
+    $: themeStyle =
+        `--accent: ${$theme};` +
+        `--accent-on: ${$theme};` +
+        `--accent-soft: ${hexToRgba($theme, 0.55)};` +
+        `--accent-glow: ${hexToRgba($theme, 0.45)};`;
 
     let menuEl: HTMLDivElement;
     let headerEl: HTMLDivElement;
@@ -88,7 +107,7 @@
 <div
     bind:this={menuEl}
     class="socrate-menu window"
-    style="left: {pos.x}px; top: {pos.y}px; width: {MENU_W}px;"
+    style="left: {pos.x}px; top: {pos.y}px; width: {MENU_W}px; {themeStyle}"
 >
     <div
         bind:this={headerEl}
@@ -100,7 +119,7 @@
         on:pointercancel={onPointerUp}
     >
         <span class="brand">Socrate</span>
-        <span class="version">v0.1.0</span>
+        <span class="version">v0.1.2 (Beta Release) https://usesocrate.xyz/</span>
         <span class="spacer"></span>
         <button class="iconbtn" title="Minimize" on:click|stopPropagation={() => {}}>
             <Icon name="minus" size={11} />
@@ -117,8 +136,14 @@
             <Aiming />
         {:else if $activeTab === "Visuals"}
             <Visuals />
-        {:else}
-            <Empty name={$activeTab} />
+        {:else if $activeTab === "Output"}
+            <Output />
+        {:else if $activeTab === "Options"}
+            <Options />
+        {:else if $activeTab === "Player List"}
+            <PlayerList />
+        {:else if $activeTab === "Servers"}
+            <Servers />
         {/if}
     </div>
 </div>

@@ -130,6 +130,15 @@ fn norm3(v: [f32; 3]) -> Option<[f32; 3]> {
     Some([v[0] / l, v[1] / l, v[2] / l])
 }
 
+/// Public wrapper so `spectate.rs` (and any future module) can reuse the
+/// look-at + matrix-write logic without duplicating it.
+pub fn aim_camera_pub(
+    sdk: &SdkI, camera_ptr: u64, cam_pos: [f32; 3], target: [f32; 3],
+    smoothing: f32, current: [[f32; 3]; 3],
+) {
+    aim_camera(sdk, camera_ptr, cam_pos, target, smoothing, current);
+}
+
 fn aim_camera(
     sdk: &SdkI,
     camera_ptr: u64,

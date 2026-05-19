@@ -262,31 +262,51 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     box2d = Some([xmin - px, ymin - py, xmax + px, ymax + py]);
                 }
 
-                // Box 3D — 1.5 × 3 × 1 stud cube centred on the anchor,
-                // axis-aligned to the world. 12 edges = the standard cube
-                // wireframe.
+                // Box 3D — dynamic AABB of every read part position. The
+                // cube grows/shrinks with the character's pose (arms out =
+                // wider, crouch = shorter, etc.) instead of being a fixed
+                // cube hovering around the head/text area.
                 let mut box3d: Vec<[f32; 4]> = Vec::with_capacity(12);
                 {
-                    let hx = 0.75_f32;
-                    let hy = 1.5_f32;
-                    let hz = 0.5_f32;
-                    let cx = anchor[0];
-                    let cy = anchor[1];
-                    let cz = anchor[2];
-                    let corners = [
-                        [cx - hx, cy - hy, cz - hz], [cx + hx, cy - hy, cz - hz],
-                        [cx - hx, cy + hy, cz - hz], [cx + hx, cy + hy, cz - hz],
-                        [cx - hx, cy - hy, cz + hz], [cx + hx, cy - hy, cz + hz],
-                        [cx - hx, cy + hy, cz + hz], [cx + hx, cy + hy, cz + hz],
-                    ];
-                    const EDGES: [(usize, usize); 12] = [
-                        (0,1),(2,3),(4,5),(6,7),  // X
-                        (0,2),(1,3),(4,6),(5,7),  // Y
-                        (0,4),(1,5),(2,6),(3,7),  // Z
-                    ];
-                    for &(a, b) in &EDGES {
-                        if let Some((na, nb)) = segment_to_ndc(corners[a], corners[b], view, proj) {
-                            box3d.push([na[0], na[1], nb[0], nb[1]]);
+                    let mut count = 0usize;
+                    let mut xmin = f32::INFINITY;
+                    let mut xmax = f32::NEG_INFINITY;
+                    let mut ymin = f32::INFINITY;
+                    let mut ymax = f32::NEG_INFINITY;
+                    let mut zmin = f32::INFINITY;
+                    let mut zmax = f32::NEG_INFINITY;
+                    for p in world_positions.iter().filter_map(|p| *p) {
+                        xmin = xmin.min(p[0]); xmax = xmax.max(p[0]);
+                        ymin = ymin.min(p[1]); ymax = ymax.max(p[1]);
+                        zmin = zmin.min(p[2]); zmax = zmax.max(p[2]);
+                        count += 1;
+                    }
+                    if count >= 2 {
+                        // Pad for limb thickness on horizontal axes; feet
+                        // sit roughly 1 stud below the lowest cached joint
+                        // (lower legs), and the head top is ~0.5 above the
+                        // head joint.
+                        let pad_xz = 0.5_f32;
+                        xmin -= pad_xz; xmax += pad_xz;
+                        zmin -= pad_xz; zmax += pad_xz;
+                        ymin -= 1.0;
+                        ymax += 0.5;
+
+                        let corners = [
+                            [xmin, ymin, zmin], [xmax, ymin, zmin],
+                            [xmin, ymax, zmin], [xmax, ymax, zmin],
+                            [xmin, ymin, zmax], [xmax, ymin, zmax],
+                            [xmin, ymax, zmax], [xmax, ymax, zmax],
+                        ];
+                        const EDGES: [(usize, usize); 12] = [
+                            (0,1),(2,3),(4,5),(6,7),  // X
+                            (0,2),(1,3),(4,6),(5,7),  // Y
+                            (0,4),(1,5),(2,6),(3,7),  // Z
+                        ];
+                        for &(a, b) in &EDGES {
+                            if let Some((na, nb)) = segment_to_ndc(corners[a], corners[b], view, proj) {
+                                box3d.push([na[0], na[1], nb[0], nb[1]]);
+                            }
                         }
                     }
                 }

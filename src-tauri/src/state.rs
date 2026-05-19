@@ -127,10 +127,16 @@ pub struct VisualsCfg {
 
     pub names: bool,
     pub names_color: String,
+    pub names_offset_x: f32,
+    pub names_offset_y: f32,
     pub distance: bool,
     pub distance_color: String,
+    pub distance_offset_x: f32,
+    pub distance_offset_y: f32,
     pub health: bool,
     pub health_color: String,
+    pub health_offset_x: f32,
+    pub health_offset_y: f32,
     pub health_bar: bool,
     pub health_bar_color: String,
 
@@ -165,10 +171,16 @@ impl Default for VisualsCfg {
             view_dir_length: 6.0,
             names: false,
             names_color: "#ffffff".into(),
+            names_offset_x: 0.0,
+            names_offset_y: -14.0,
             distance: false,
             distance_color: "#ffffff".into(),
+            distance_offset_x: 0.0,
+            distance_offset_y: 22.0,
             health: false,
             health_color: "#ffffff".into(),
+            health_offset_x: 0.0,
+            health_offset_y: 34.0,
             health_bar: false,
             health_bar_color: "#ffffff".into(),
             team_check: true,
@@ -215,6 +227,9 @@ pub struct AppState {
 
     pub aimbot_cfg: Mutex<AimbotCfg>,
     pub visuals_cfg: Mutex<VisualsCfg>,
+
+    /// Char_addr of the player currently being spectated. 0 = off.
+    pub spectate_target: Mutex<u64>,
 }
 
 impl Default for AppState {
@@ -227,6 +242,7 @@ impl Default for AppState {
             char_caches: Mutex::new(Arc::new(Vec::new())),
             aimbot_cfg: Mutex::new(AimbotCfg::default()),
             visuals_cfg: Mutex::new(VisualsCfg::default()),
+            spectate_target: Mutex::new(0),
         }
     }
 }

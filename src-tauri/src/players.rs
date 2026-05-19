@@ -72,6 +72,11 @@ pub struct CharCache {
     /// 0 = R15, 1 = R6, 2 = HRP fallback.
     pub rig_type: u8,
     pub humanoid_addr: u64,
+    /// HumanoidRootPart primitive — the only part whose LookVector reliably
+    /// matches the character's facing. Spectate / camera-aim need this; the
+    /// head's LookVector can pivot independently and gives wrong results.
+    /// 0 if HRP wasn't found.
+    pub hrp_primitive: u64,
     pub last_validated: Instant,
 }
 
@@ -191,12 +196,21 @@ pub fn build_char_cache(sdk: &SdkI, char_addr: u64, humanoid_addr: u64) -> Optio
 
     if best_rig == u8::MAX || best_score == 0 { return None; }
 
+    // HRP independent of the rig template — used by spectate for a stable
+    // "behind the character" direction.
+    let hrp_addr = find_child_fast(sdk, char_addr, "HumanoidRootPart");
+    let hrp_primitive = if sdk.is_valid_ptr(hrp_addr) {
+        let p = sdk.read::<u64>(hrp_addr + offsets::BasePart::Primitive as u64);
+        if sdk.is_valid_ptr(p) { p } else { 0 }
+    } else { 0 };
+
     Some(CharCache {
         char_addr,
         name: read_name_fast(sdk, char_addr),
         parts: best_parts,
         rig_type: best_rig,
         humanoid_addr,
+        hrp_primitive,
         last_validated: Instant::now(),
     })
 }

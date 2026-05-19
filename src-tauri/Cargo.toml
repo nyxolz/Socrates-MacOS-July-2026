@@ -24,6 +24,7 @@ core-graphics = "0.23"
 core-foundation = "0.9"
 libc = "0.2"
 once_cell = "1.18"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 strip = true

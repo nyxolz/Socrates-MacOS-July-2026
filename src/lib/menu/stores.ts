@@ -3,27 +3,39 @@ import { writable, type Writable } from "svelte/store";
 export type TabId =
     | "Aiming"
     | "Visuals"
-    | "Misc"
     | "Output"
     | "Options"
-    | "Script View"
     | "Player List"
-    | "Addons"
     | "Servers";
 
 export const TABS: TabId[] = [
     "Aiming",
     "Visuals",
-    "Misc",
     "Output",
     "Options",
-    "Script View",
     "Player List",
-    "Addons",
     "Servers",
 ];
 
 export const activeTab: Writable<TabId> = writable("Aiming");
+
+// Theme accent — persisted in localStorage. Subscribe in Menu.svelte to
+// reflect the colour into `--accent` etc. on the menu element.
+const THEME_KEY = "socrate.theme";
+const initialTheme = (typeof localStorage !== "undefined" && localStorage.getItem(THEME_KEY)) || "#ffde9d";
+export const theme: Writable<string> = writable(initialTheme);
+theme.subscribe((c) => {
+    if (typeof localStorage !== "undefined") localStorage.setItem(THEME_KEY, c);
+});
+
+export const THEME_PRESETS: { name: string; value: string }[] = [
+    { name: "Cream",  value: "#ffde9d" },
+    { name: "Pink",   value: "#ffb3d9" },
+    { name: "Red",    value: "#ff9a9e" },
+    { name: "Blue",   value: "#a4d8ff" },
+    { name: "Green",  value: "#b8e8c8" },
+    { name: "Purple", value: "#d0a8ff" },
+];
 
 export type SelectionMode = "Distance" | "Health" | "Crosshair";
 export type AimType = "Mouse" | "Camera";
@@ -134,13 +146,20 @@ export type VisualsCfg = {
     view_dir_color: string;
     view_dir_length: number;   // studs
 
-    // Text
+    // Text — offsets are pixel deltas from the head anchor; dragging in
+    // the Preview rewrites these values live.
     names: boolean;
     names_color: string;
+    names_offset_x: number;
+    names_offset_y: number;
     distance: boolean;
     distance_color: string;
+    distance_offset_x: number;
+    distance_offset_y: number;
     health: boolean;
     health_color: string;
+    health_offset_x: number;
+    health_offset_y: number;
     health_bar: boolean;
     health_bar_color: string;
 
@@ -180,10 +199,16 @@ export const visuals: Writable<VisualsCfg> = writable({
 
     names: false,
     names_color: "#ffffff",
+    names_offset_x: 0,
+    names_offset_y: -14,
     distance: false,
     distance_color: "#ffffff",
+    distance_offset_x: 0,
+    distance_offset_y: 22,
     health: false,
     health_color: "#ffffff",
+    health_offset_x: 0,
+    health_offset_y: 34,
     health_bar: false,
     health_bar_color: "#ffffff",
 

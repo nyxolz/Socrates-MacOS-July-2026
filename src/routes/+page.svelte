@@ -222,18 +222,20 @@
                 }
                 if (p.head) {
                     const hp = ndcToScreen(p.head[0], p.head[1]);
-                    let textY = hp.y - 14;
                     if (cfg.names) {
-                        drawText(ctx, p.name || "?", hp.x, textY, cfg.names_color, outline);
-                        textY -= 13;
+                        drawText(ctx, p.name || "?",
+                            hp.x + cfg.names_offset_x, hp.y + cfg.names_offset_y,
+                            cfg.names_color, outline);
                     }
-                    let belowY = hp.y + 22;
                     if (cfg.distance) {
-                        drawText(ctx, `${p.distance.toFixed(0)}m`, hp.x, belowY, cfg.distance_color, outline, 10);
-                        belowY += 12;
+                        drawText(ctx, `${p.distance.toFixed(0)}m`,
+                            hp.x + cfg.distance_offset_x, hp.y + cfg.distance_offset_y,
+                            cfg.distance_color, outline, 10);
                     }
                     if (cfg.health && p.health >= 0) {
-                        drawText(ctx, `${p.health.toFixed(0)} hp`, hp.x, belowY, cfg.health_color, outline, 10);
+                        drawText(ctx, `${p.health.toFixed(0)} hp`,
+                            hp.x + cfg.health_offset_x, hp.y + cfg.health_offset_y,
+                            cfg.health_color, outline, 10);
                     }
                 }
             }
