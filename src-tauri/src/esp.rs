@@ -15,12 +15,15 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use obfstr::obfstr;
+
 use crate::aimbot::current_cursor;
 use crate::math::{build_projection_matrix, build_view_matrix, segment_to_ndc, world_to_ndc, world_to_offscreen_dir};
 use crate::offsets;
 use crate::overlay::TITLEBAR_HEIGHT;
 use crate::players::read_pos_fast;
 use crate::sdk::SdkI;
+use crate::security;
 use crate::state::AppState;
 
 #[derive(Serialize, Clone, Debug)]
@@ -58,17 +61,8 @@ pub struct EspFrame {
     pub cursor: Option<(f64, f64)>,
 }
 
-fn resolve_camera(sdk: &SdkI) -> Option<u64> {
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return None; }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return None; }
-    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
-    if !sdk.is_valid_ptr(ws) { return None; }
-    let cam = sdk.read::<u64>(ws + offsets::Workspace::Camera as u64);
-    if !sdk.is_valid_ptr(cam) { return None; }
-    Some(cam)
-}
+// Use the obfuscated chain resolver. Raw offset literals don't leak.
+use security::resolve_camera;
 
 fn read_camera(sdk: &SdkI, camera_ptr: u64) -> ([f32; 3], [[f32; 3]; 3]) {
     let pos_off = offsets::Camera::CameraPosition as u64;
@@ -141,7 +135,10 @@ pub fn start_esp_thread(app_handle: AppHandle) {
             let sdk = match sdk_opt {
                 Some(s) => s,
                 None => {
-                    if let Ok(new_sdk) = SdkI::new("RobloxPlayer") {
+                    // Process name kept off-binary by obfstr — `strings` on
+                    // the release Mach-O won't show "RobloxPlayer".
+                    let pname = obfstr!("RobloxPlayer").to_string();
+                    if let Ok(new_sdk) = SdkI::new(&pname) {
                         *state.sdk.lock().unwrap() = Some(Arc::new(new_sdk));
                     }
                     thread::sleep(Duration::from_millis(500));

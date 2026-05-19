@@ -12,6 +12,7 @@ mod players;
 mod esp;
 mod aimbot;
 mod spectate;
+mod security;
 
 use std::ptr;
 
@@ -21,6 +22,7 @@ use crate::aimbot::start_aimbot_thread;
 use crate::esp::start_esp_thread;
 use crate::overlay::{setup_window_overlay, start_mouse_tracker, start_window_tracker};
 use crate::players::start_char_cache_thread;
+use crate::security::start_security_thread;
 use crate::spectate::start_spectate_thread;
 use crate::state::AppState;
 
@@ -128,6 +130,10 @@ pub fn run() {
             start_aimbot_thread(app.handle().clone());
             start_spectate_thread(app.handle().clone());
 
+            // Background anti-RE watcher: Frida / lldb / sysctl P_TRACED.
+            #[cfg(target_os = "macos")]
+            start_security_thread();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -144,6 +150,7 @@ pub fn run() {
             commands::set_spectate_target,
             commands::get_spectate_target,
             commands::get_place_name,
+            commands::get_instance_tree,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

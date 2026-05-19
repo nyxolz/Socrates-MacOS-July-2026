@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use obfstr::obfstr;
 use tauri::{AppHandle, Manager};
 
 use crate::offsets;
@@ -197,8 +198,8 @@ pub fn build_char_cache(sdk: &SdkI, char_addr: u64, humanoid_addr: u64) -> Optio
     if best_rig == u8::MAX || best_score == 0 { return None; }
 
     // HRP independent of the rig template — used by spectate for a stable
-    // "behind the character" direction.
-    let hrp_addr = find_child_fast(sdk, char_addr, "HumanoidRootPart");
+    // "behind the character" direction. Name kept obfuscated.
+    let hrp_addr = find_child_fast(sdk, char_addr, obfstr!("HumanoidRootPart").as_ref());
     let hrp_primitive = if sdk.is_valid_ptr(hrp_addr) {
         let p = sdk.read::<u64>(hrp_addr + offsets::BasePart::Primitive as u64);
         if sdk.is_valid_ptr(p) { p } else { 0 }
@@ -219,8 +220,9 @@ pub fn build_char_cache(sdk: &SdkI, char_addr: u64, humanoid_addr: u64) -> Optio
 pub fn discover_characters(sdk: &SdkI, workspace: u64) -> Vec<CharCache> {
     let mut caches = Vec::new();
     let workspace_children = get_children(sdk, workspace);
+    let humanoid_name = obfstr!("Humanoid").to_string();
     for c in workspace_children.into_iter().take(200) {
-        let humanoid = find_child_fast(sdk, c, "Humanoid");
+        let humanoid = find_child_fast(sdk, c, &humanoid_name);
         if !sdk.is_valid_ptr(humanoid) { continue; }
         if let Some(cache) = build_char_cache(sdk, c, humanoid) {
             caches.push(cache);
@@ -251,11 +253,5 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
 }
 
 fn resolve_workspace(sdk: &SdkI) -> Option<u64> {
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return None; }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return None; }
-    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
-    if !sdk.is_valid_ptr(ws) { return None; }
-    Some(ws)
+    crate::security::resolve_workspace(sdk)
 }

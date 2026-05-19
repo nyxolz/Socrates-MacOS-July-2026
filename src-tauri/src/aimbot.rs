@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
+use obfstr::obfstr;
 use tauri::{AppHandle, Manager};
 
 use crate::math::{build_projection_matrix, build_view_matrix, world_to_ndc};
@@ -21,6 +22,7 @@ use crate::offsets;
 use crate::overlay::TITLEBAR_HEIGHT;
 use crate::players::read_pos_fast;
 use crate::sdk::SdkI;
+use crate::security;
 use crate::state::AppState;
 
 unsafe extern "C" {
@@ -95,17 +97,9 @@ pub fn current_cursor() -> Option<CGPoint> {
     Some(e.location())
 }
 
-fn resolve_camera(sdk: &SdkI) -> Option<u64> {
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return None; }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return None; }
-    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
-    if !sdk.is_valid_ptr(ws) { return None; }
-    let cam = sdk.read::<u64>(ws + offsets::Workspace::Camera as u64);
-    if !sdk.is_valid_ptr(cam) { return None; }
-    Some(cam)
-}
+// `resolve_camera` lives in `security` now (uses XOR'd offsets so the raw
+// literals never appear inline). Re-export for the rest of this module.
+use security::resolve_camera;
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t.clamp(0.0, 1.0) }
 
@@ -196,11 +190,9 @@ fn rand(state: &mut u32) -> f32 {
 /// Map `cfg.part` → slot index inside `CharCache.parts`. Cherry's rig table
 /// puts Head at 0, UpperTorso/Torso at 1, and the HRP fallback at slot 1.
 fn part_slot(part: &str, rig_type: u8) -> usize {
-    match part {
-        "Torso" => 1,
-        "HumanoidRootPart" => if rig_type == 2 { 1 } else { 0 },
-        _ => 0, // Head
-    }
+    if part == obfstr!("Torso") { 1 }
+    else if part == obfstr!("HumanoidRootPart") { if rig_type == 2 { 1 } else { 0 } }
+    else { 0 } // Head
 }
 
 pub fn start_aimbot_thread(app_handle: AppHandle) {

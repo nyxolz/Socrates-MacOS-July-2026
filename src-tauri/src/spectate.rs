@@ -15,19 +15,8 @@ use crate::aimbot;
 use crate::offsets;
 use crate::players::read_pos_fast;
 use crate::sdk::SdkI;
+use crate::security::resolve_camera;
 use crate::state::AppState;
-
-fn resolve_camera(sdk: &SdkI) -> Option<u64> {
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return None; }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return None; }
-    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
-    if !sdk.is_valid_ptr(ws) { return None; }
-    let cam = sdk.read::<u64>(ws + offsets::Workspace::Camera as u64);
-    if !sdk.is_valid_ptr(cam) { return None; }
-    Some(cam)
-}
 
 fn read_camera_matrix(sdk: &SdkI, camera_ptr: u64) -> [[f32; 3]; 3] {
     let mo = offsets::Camera::CameraOrientation as u64;

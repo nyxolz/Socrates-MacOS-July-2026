@@ -6,6 +6,7 @@ export type TabId =
     | "Output"
     | "Options"
     | "Player List"
+    | "Explorer"
     | "Servers";
 
 export const TABS: TabId[] = [
@@ -14,6 +15,7 @@ export const TABS: TabId[] = [
     "Output",
     "Options",
     "Player List",
+    "Explorer",
     "Servers",
 ];
 

@@ -2295,6 +2295,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "obfstr"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0d354e9a302760d07e025701d40534f17dd1fe4c4db955b4e3bd2907c63bdee"
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3350,6 +3356,7 @@ dependencies = [
  "core-graphics 0.23.2",
  "image",
  "libc",
+ "obfstr",
  "objc",
  "once_cell",
  "serde",

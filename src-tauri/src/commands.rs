@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use obfstr::obfstr;
 use serde::Serialize;
 use tauri::State;
 
@@ -47,7 +48,7 @@ pub fn panic_exit() {
 /// address for sanity-checking from the UI.
 #[tauri::command]
 pub fn attach_sdk(state: State<AppState>, process_name: Option<String>) -> Result<String, String> {
-    let name = process_name.unwrap_or_else(|| "RobloxPlayer".to_string());
+    let name = process_name.unwrap_or_else(|| obfstr!("RobloxPlayer").to_string());
     let sdk = SdkI::new(&name)?;
     let base = sdk.base;
     *state.sdk.lock().unwrap() = Some(Arc::new(sdk));
@@ -85,7 +86,7 @@ pub fn diag_check(state: State<AppState>) -> bool {
     if !sdk.is_valid_ptr(dm) { return false; }
     let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
     if !sdk.is_valid_ptr(ws) { return false; }
-    sdk::name_of(&sdk, ws) == "Workspace"
+    sdk::name_of(&sdk, ws) == obfstr!("Workspace")
 }
 
 // ─── Player List + Spectate ──────────────────────────────────────────────
@@ -180,6 +181,60 @@ pub fn get_place_name(state: State<AppState>) -> String {
     if !sdk.is_valid_ptr(dm) { return "(no datamodel)".into(); }
     let name = sdk::name_of(&sdk, dm);
     if name.is_empty() { "(no place)".into() } else { name }
+}
+
+// ─── Explorer — DataModel instance tree ─────────────────────────────────
+
+#[derive(Serialize, Clone)]
+pub struct InstanceNode {
+    pub name: String,
+    pub address: String,
+    pub children: Vec<InstanceNode>,
+}
+
+/// Walk the DataModel recursively and return a capped tree. Caps keep the
+/// payload sane (a real DataModel can hold tens of thousands of nodes).
+#[tauri::command]
+pub fn get_instance_tree(state: State<AppState>) -> Result<InstanceNode, String> {
+    let sdk = state.sdk.lock().unwrap().clone().ok_or_else(|| "not attached".to_string())?;
+    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
+    if !sdk.is_valid_ptr(fdm) { return Err("no fake datamodel".into()); }
+    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
+    if !sdk.is_valid_ptr(dm) { return Err("no datamodel".into()); }
+
+    const MAX_DEPTH: u32 = 5;
+    const MAX_CHILDREN_PER_NODE: usize = 200;
+    const MAX_TOTAL_NODES: usize = 4000;
+
+    fn build(sdk: &SdkI, instance: u64, depth: u32, total: &mut usize) -> Option<InstanceNode> {
+        if !sdk.is_valid_ptr(instance) { return None; }
+        if *total >= MAX_TOTAL_NODES { return None; }
+        *total += 1;
+        let name = sdk::name_of(sdk, instance);
+        let address = format!("0x{:X}", instance);
+        let mut children = Vec::new();
+        if depth < MAX_DEPTH {
+            for c in sdk::get_children(sdk, instance).into_iter().take(MAX_CHILDREN_PER_NODE) {
+                if *total >= MAX_TOTAL_NODES { break; }
+                if let Some(n) = build(sdk, c, depth + 1, total) {
+                    children.push(n);
+                }
+            }
+        }
+        Some(InstanceNode { name, address, children })
+    }
+
+    let mut total = 0usize;
+    let root_children: Vec<InstanceNode> = sdk::get_children(&sdk, dm)
+        .into_iter()
+        .filter_map(|c| build(&sdk, c, 1, &mut total))
+        .collect();
+    let root_name = sdk::name_of(&sdk, dm);
+    Ok(InstanceNode {
+        name: if root_name.is_empty() { "DataModel".to_string() } else { root_name },
+        address: format!("0x{:X}", dm),
+        children: root_children,
+    })
 }
 
 // keep silenced warnings happy if these end up unused later

@@ -9,6 +9,7 @@
     import Output from "./tabs/Output.svelte";
     import Options from "./tabs/Options.svelte";
     import PlayerList from "./tabs/PlayerList.svelte";
+    import Explorer from "./tabs/Explorer.svelte";
     import Servers from "./tabs/Servers.svelte";
     import Icon from "./controls/Icon.svelte";
     import "./tokens.css";
@@ -142,6 +143,8 @@
             <Options />
         {:else if $activeTab === "Player List"}
             <PlayerList />
+        {:else if $activeTab === "Explorer"}
+            <Explorer />
         {:else if $activeTab === "Servers"}
             <Servers />
         {/if}

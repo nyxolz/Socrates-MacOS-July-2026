@@ -1,0 +1,12 @@
+# Release-only macOS link flags layered on top of `strip = true` in
+# Cargo.toml. `-Wl,-x` drops local symbols (function names, file refs)
+# that survive even when global symbols are stripped, and
+# `-Wl,-dead_strip` removes unreferenced code sections so unused paths
+# don't end up in the final Mach-O. Debug builds keep all symbols.
+
+[target.'cfg(all(target_os = "macos", not(debug_assertions)))']
+rustflags = [
+    "-C", "link-arg=-Wl,-x",
+    "-C", "link-arg=-Wl,-S",
+    "-C", "link-arg=-Wl,-dead_strip",
+]
