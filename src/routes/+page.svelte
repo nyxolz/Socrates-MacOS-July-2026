@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+    import { invoke } from "@tauri-apps/api/core";
     import Menu from "$lib/menu/Menu.svelte";
     import { visuals, aimbot, menuOptions, theme, type VisualsCfg, type AimbotCfg, type MenuOptionsCfg } from "$lib/menu/stores";
 
@@ -359,6 +360,9 @@
     }
 
     onMount(async () => {
+        // Roblox-running gate happens in Rust (lib.rs::gate_on_roblox)
+        // before the overlay window is even created. By the time we mount
+        // here, Roblox is guaranteed to be running.
         resizeCanvas();
         initSnow();
         window.addEventListener("resize", resizeCanvas);

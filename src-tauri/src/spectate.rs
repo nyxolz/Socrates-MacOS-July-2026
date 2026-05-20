@@ -1,102 +1,140 @@
-//! Spectate thread.
+//! Native-style spectate via `Camera.CameraSubject`.
 //!
-//! When `AppState.spectate_target` is non-zero, every ~16 ms (60 Hz) we
-//! locate the target's head, place the camera ~10 studs behind it (along
-//! the target's look direction, +3 studs up), and lock the camera matrix
-//! to point at the head. Roblox's default Custom camera may fight us each
-//! frame; the high cadence keeps the rendered view mostly on our side.
+//! Previous implementation wrote `CameraPosition` + `CameraOrientation`
+//! every 16 ms, fighting Roblox's CameraScript every frame — jittery and
+//! brittle. This version sets `Camera.CameraSubject` to the target's
+//! Humanoid instead. Roblox's own Custom-camera scripts then follow that
+//! target with full lissage + mouse-orbit control: same UX as a regular
+//! Roblox spectate, zero polling war.
+//!
+//! `Camera.CameraSubject` is at a build-specific offset we don't ship in
+//! `offsets.rs`. We discover it once at runtime: by default
+//! `CameraSubject == LocalPlayer.Character.Humanoid`, so we scan the
+//! Camera struct for that exact pointer value. First match (8-byte
+//! aligned, generous range) wins; the offset is cached in an atomic for
+//! the rest of the session.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use obfstr::obfstr;
 use tauri::{AppHandle, Manager};
 
-use crate::aimbot;
 use crate::offsets;
-use crate::players::read_pos_fast;
+use crate::players::find_child_fast;
 use crate::sdk::SdkI;
 use crate::security::resolve_camera;
 use crate::state::AppState;
 
-fn read_camera_matrix(sdk: &SdkI, camera_ptr: u64) -> [[f32; 3]; 3] {
-    let mo = offsets::Camera::CameraOrientation as u64;
-    [
-        [sdk.read::<f32>(camera_ptr + mo),
-         sdk.read::<f32>(camera_ptr + mo + 4),
-         sdk.read::<f32>(camera_ptr + mo + 8)],
-        [sdk.read::<f32>(camera_ptr + mo + 12),
-         sdk.read::<f32>(camera_ptr + mo + 16),
-         sdk.read::<f32>(camera_ptr + mo + 20)],
-        [sdk.read::<f32>(camera_ptr + mo + 24),
-         sdk.read::<f32>(camera_ptr + mo + 28),
-         sdk.read::<f32>(camera_ptr + mo + 32)],
-    ]
+/// 0 sentinel = not discovered yet. Real offsets are small (< 0x400).
+static CAMERA_SUBJECT_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// Walk DataModel → Workspace → child named like the local player →
+/// `Humanoid`. Returns 0 on any failure (process not attached, respawn in
+/// progress, etc.). Cheap enough to call from the spectate tick.
+fn resolve_local_humanoid(sdk: &SdkI, local_name: &str) -> u64 {
+    if local_name.is_empty() { return 0; }
+    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
+    if !sdk.is_valid_ptr(fdm) { return 0; }
+    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
+    if !sdk.is_valid_ptr(dm) { return 0; }
+    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
+    if !sdk.is_valid_ptr(ws) { return 0; }
+    let char_addr = find_child_fast(sdk, ws, local_name);
+    if !sdk.is_valid_ptr(char_addr) { return 0; }
+    let humanoid = find_child_fast(sdk, char_addr, obfstr!("Humanoid").as_ref());
+    if !sdk.is_valid_ptr(humanoid) { return 0; }
+    humanoid
 }
 
-fn read_look_dir(sdk: &SdkI, primitive: u64) -> [f32; 3] {
-    let d = [
-        -sdk.read::<f32>(primitive + 0xC8),
-        -sdk.read::<f32>(primitive + 0xD4),
-        -sdk.read::<f32>(primitive + 0xE0),
-    ];
-    let l = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt();
-    if l < 1e-5 || !l.is_finite() { [0.0, 0.0, 1.0] } else { [d[0]/l, d[1]/l, d[2]/l] }
+/// Scan Camera memory 8-byte aligned for a u64 equal to `target`. The
+/// match is unique enough in practice — a precise Humanoid pointer almost
+/// never collides with random struct bytes.
+fn discover_subject_offset(sdk: &SdkI, camera_ptr: u64, target: u64) -> Option<u64> {
+    let mut off = 0x100u64;
+    while off + 8 <= 0x400 {
+        if sdk.read::<u64>(camera_ptr + off) == target {
+            return Some(off);
+        }
+        off += 8;
+    }
+    None
+}
+
+/// Ensure the subject offset is known, returning it. Lazy: tries each
+/// tick until the local Humanoid is resolvable and a match is found.
+fn ensure_offset(sdk: &SdkI, state: &AppState, camera_ptr: u64) -> Option<u64> {
+    let cached = CAMERA_SUBJECT_OFFSET.load(Ordering::Relaxed);
+    if cached != 0 { return Some(cached); }
+    let local_name = state.local_player_name.lock().unwrap().clone();
+    let local_humanoid = resolve_local_humanoid(sdk, &local_name);
+    if local_humanoid == 0 { return None; }
+    let off = discover_subject_offset(sdk, camera_ptr, local_humanoid)?;
+    CAMERA_SUBJECT_OFFSET.store(off, Ordering::Relaxed);
+    Some(off)
 }
 
 pub fn start_spectate_thread(app_handle: AppHandle) {
     thread::spawn(move || {
-        const BACK: f32 = 10.0;
-        const UP: f32 = 3.0;
+        // `original_subject != 0` ↔ we are currently spectating and have
+        // saved the user's original CameraSubject so we can restore it.
+        let mut original_subject: u64 = 0;
+
         loop {
-            thread::sleep(Duration::from_millis(16));
+            thread::sleep(Duration::from_millis(100));
+
             let state = app_handle.state::<AppState>();
             let target = *state.spectate_target.lock().unwrap();
-            if target == 0 { continue; }
 
             let sdk = match state.sdk.lock().unwrap().clone() {
                 Some(s) => s, None => continue,
             };
-
-            let caches = state.char_caches.lock().unwrap().clone();
-            let cache = match caches.iter().find(|c| c.char_addr == target) {
-                Some(c) => c, None => continue,
-            };
-            let (head_prim, valid) = cache.parts[0];
-            if !valid { continue; }
-            let head_pos = read_pos_fast(&sdk, head_prim);
-            if !head_pos[0].is_finite() { continue; }
-
-            // Prefer HRP look-dir (matches body facing); fall back to head
-            // primitive only when HRP isn't cached. Without this, the head's
-            // independent pivot makes the trailing camera jump around.
-            let look_prim = if cache.hrp_primitive != 0 { cache.hrp_primitive } else { head_prim };
-            let look = read_look_dir(&sdk, look_prim);
-            // Zero the vertical component so the camera stays at a stable
-            // height instead of tilting through the floor when the target
-            // crouches or looks up/down.
-            let mut look_flat = [look[0], 0.0_f32, look[2]];
-            let l = (look_flat[0]*look_flat[0] + look_flat[2]*look_flat[2]).sqrt();
-            if l > 1e-3 {
-                look_flat[0] /= l;
-                look_flat[2] /= l;
-            } else {
-                look_flat = [0.0, 0.0, 1.0]; // arbitrary fallback
-            }
-            let new_cam = [
-                head_pos[0] - look_flat[0] * BACK,
-                head_pos[1] + UP,
-                head_pos[2] - look_flat[2] * BACK,
-            ];
-
             let camera = match resolve_camera(&sdk) { Some(c) => c, None => continue };
-            let pos_off = offsets::Camera::CameraPosition as u64;
-            sdk.write::<f32>(camera + pos_off,     new_cam[0]);
-            sdk.write::<f32>(camera + pos_off + 4, new_cam[1]);
-            sdk.write::<f32>(camera + pos_off + 8, new_cam[2]);
 
-            let current = read_camera_matrix(&sdk, camera);
-            // Snap orientation onto the target — smoothing 0 = snap.
-            aimbot::aim_camera_pub(&sdk, camera, new_cam, head_pos, 0.0, current);
+            let subject_offset = match ensure_offset(&sdk, &state, camera) {
+                Some(o) => o, None => continue,
+            };
+
+            // Resolve target's Humanoid via the existing char cache. If the
+            // target left / died, the cache no longer has it → we'll bail
+            // out below and restore the user's original subject.
+            let target_humanoid: u64 = if target != 0 {
+                state.char_caches.lock().unwrap().iter()
+                    .find(|c| c.char_addr == target)
+                    .map(|c| c.humanoid_addr)
+                    .filter(|h| sdk.is_valid_ptr(*h))
+                    .unwrap_or(0)
+            } else { 0 };
+
+            match (original_subject != 0, target_humanoid != 0) {
+                (false, true) => {
+                    // Idle → spectating. Save original, redirect subject.
+                    let orig = sdk.read::<u64>(camera + subject_offset);
+                    if sdk.is_valid_ptr(orig) {
+                        original_subject = orig;
+                        sdk.write::<u64>(camera + subject_offset, target_humanoid);
+                    }
+                }
+                (true, true) => {
+                    // Spectating — keep the subject pinned (Roblox can
+                    // reset it across respawns / mode changes).
+                    let current = sdk.read::<u64>(camera + subject_offset);
+                    if current != target_humanoid {
+                        sdk.write::<u64>(camera + subject_offset, target_humanoid);
+                    }
+                }
+                (true, false) => {
+                    // Spectating → no valid target (cleared by user, or
+                    // target gone). Restore and clear.
+                    sdk.write::<u64>(camera + subject_offset, original_subject);
+                    original_subject = 0;
+                    if target != 0 {
+                        *state.spectate_target.lock().unwrap() = 0;
+                    }
+                }
+                (false, false) => {} // idle, nothing to do
+            }
         }
     });
 }

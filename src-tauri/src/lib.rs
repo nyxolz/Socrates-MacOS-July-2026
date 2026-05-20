@@ -24,6 +24,7 @@ use crate::aimbot::start_aimbot_thread;
 use crate::esp::start_esp_thread;
 use crate::input::start_input_thread;
 use crate::menu_hotkey::start_menu_hotkey_thread;
+use crate::overlay::bounds::find_window_bounds;
 use crate::overlay::{setup_window_overlay, start_mouse_tracker, start_window_tracker};
 use crate::players::start_char_cache_thread;
 use crate::security::start_security_thread;
@@ -111,6 +112,36 @@ fn anti_debug() {
     }
 }
 
+/// Generic error dialog (rfd → NSAlert on macOS). Buttons read "Retry" /
+/// "Quit". Returns `true` if the user picked Retry, `false` for Quit.
+fn show_roblox_missing_dialog() -> bool {
+    use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+    let res = MessageDialog::new()
+        .set_title("Error")
+        .set_description("Roblox must be opened first.")
+        .set_level(MessageLevel::Warning)
+        .set_buttons(MessageButtons::OkCancelCustom("Retry".into(), "Quit".into()))
+        .show();
+    matches!(&res, MessageDialogResult::Custom(s) if s == "Retry")
+        || matches!(&res, MessageDialogResult::Ok)
+}
+
+fn roblox_running() -> bool {
+    for name in &["RobloxPlayer", "Roblox", "RobloxStudio"] {
+        if find_window_bounds(name).is_some() { return true; }
+    }
+    false
+}
+
+/// Blocks until Roblox is found. Returns `false` if the user clicks Quit
+/// — caller should `exit(0)` in that case (no overlay should ever appear).
+fn gate_on_roblox() -> bool {
+    while !roblox_running() {
+        if !show_roblox_missing_dialog() { return false; }
+    }
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     anti_debug();
@@ -124,6 +155,12 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             set_dock_icon();
+
+            // Gate the whole startup on Roblox being open. Native error
+            // dialog (Retry / Quit), shown BEFORE any overlay window
+            // appears or any background thread runs. If the user quits,
+            // we exit immediately so nothing of Socrate is ever drawn.
+            if !gate_on_roblox() { std::process::exit(0); }
 
             unsafe { setup_window_overlay(&window); }
 
