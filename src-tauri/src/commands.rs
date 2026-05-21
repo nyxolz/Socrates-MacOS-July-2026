@@ -173,6 +173,7 @@ pub fn get_spectate_target(state: State<AppState>) -> Option<String> {
     if v == 0 { None } else { Some(format!("0x{:X}", v)) }
 }
 
+
 // ─── Server / place name ─────────────────────────────────────────────────
 
 /// DataModel's `Name` instance field is the place name in Roblox.
@@ -186,6 +187,21 @@ pub fn get_place_name(state: State<AppState>) -> String {
     if !sdk.is_valid_ptr(dm) { return "(no datamodel)".into(); }
     let name = sdk::name_of(&sdk, dm);
     if name.is_empty() { "(no place)".into() } else { name }
+}
+
+/// Launch the Roblox `roblox://placeId=…` URL via the macOS `open` command.
+/// Frontend validates the input as a positive integer first.
+#[tauri::command]
+pub fn join_place(place_id: String) -> Result<(), String> {
+    if place_id.is_empty() || !place_id.chars().all(|c| c.is_ascii_digit()) {
+        return Err("invalid place id".into());
+    }
+    let url = format!("roblox://placeId={}", place_id);
+    std::process::Command::new("open")
+        .arg(&url)
+        .status()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ─── Explorer — DataModel instance tree ─────────────────────────────────

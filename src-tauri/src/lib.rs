@@ -194,6 +194,7 @@ pub fn run() {
             commands::set_spectate_target,
             commands::get_spectate_target,
             commands::get_place_name,
+            commands::join_place,
             commands::get_instance_tree,
         ])
         .run(tauri::generate_context!())

@@ -42,6 +42,11 @@ case "${ARCH_CHOICE}" in
     *) die "invalid choice" ;;
 esac
 
+read -r -p "scorate (ex: Up): " SCORATE_STATUS
+[ -z "${SCORATE_STATUS}" ] && die "scorate status required"
+
+read -r -p "Whats_New: " WHATS_NEW
+
 if ! rustup target list --installed 2>/dev/null | grep -q "^${TARGET}$"; then
     say "Installing rustup target ${TARGET}..."
     rustup target add "${TARGET}"
@@ -68,18 +73,31 @@ say "Copied to ${WEBSITE_DIR}/${DMG_NAME}"
 STATUS_JSON="${WEBSITE_DIR}/status.json"
 DMG_URL="${REMOTE_RAW_BASE}/${DMG_NAME}"
 
+generate_hash() {
+  LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 10
+  echo
+}
+
+SOCRATE_VERSION="$(generate_hash)"
+
 if [ ! -f "${STATUS_JSON}" ]; then
     cat > "${STATUS_JSON}" <<'EOF'
-{ "Socrate": { "Updated_for_roblox_v": "Not Available", "arm": "Not Available", "intel": "Not Available" } }
+{ "Socrate": { "Updated_for_roblox_v": "Not Available", "arm": "Not Available", "intel": "Not Available", "scorate": "Not Available", "socrate_version": "Not Available", "Whats_New": "" } }
 EOF
 fi
 
 TMP="$(mktemp)"
-jq --arg v "${ROBLOX_V}" \
-   --arg a "${ARCH_LABEL}" \
-   --arg u "${DMG_URL}" \
+jq --arg v  "${ROBLOX_V}" \
+   --arg a  "${ARCH_LABEL}" \
+   --arg u  "${DMG_URL}" \
+   --arg s  "${SCORATE_STATUS}" \
+   --arg sv "${SOCRATE_VERSION}" \
+   --arg wn "${WHATS_NEW}" \
    '.Socrate.Updated_for_roblox_v = $v
-    | .Socrate[$a] = $u' \
+    | .Socrate[$a] = $u
+    | .Socrate.scorate = $s
+    | .Socrate.socrate_version = $sv
+    | .Socrate.Whats_New = $wn' \
    "${STATUS_JSON}" > "${TMP}" && mv "${TMP}" "${STATUS_JSON}"
 say "status.json updated:"
 jq . "${STATUS_JSON}"
