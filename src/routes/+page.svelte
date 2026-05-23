@@ -4,6 +4,7 @@
     import { invoke } from "@tauri-apps/api/core";
     import Menu from "$lib/menu/Menu.svelte";
     import { visuals, aimbot, menuOptions, theme, type VisualsCfg, type AimbotCfg, type MenuOptionsCfg } from "$lib/menu/stores";
+    import { getAvatar } from "$lib/menu/avatar";
 
     type Marker = {
         name: string;
@@ -224,6 +225,60 @@
         ctx.stroke();
     }
 
+    // Username → loaded HTMLImageElement. We fire the URL fetch + image
+    // decode lazily on the first frame we see a player, and cache forever
+    // after. `null` means "load in progress or failed" — we still try to
+    // draw a placeholder so the position is visible.
+    const avatarImages = new Map<string, HTMLImageElement | null>();
+    function getAvatarImage(username: string): HTMLImageElement | null {
+        if (!username) return null;
+        if (avatarImages.has(username)) return avatarImages.get(username) ?? null;
+        avatarImages.set(username, null);
+        getAvatar(username).then(url => {
+            if (!url) return;
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => avatarImages.set(username, img);
+            img.src = url;
+        });
+        return null;
+    }
+
+    function drawAvatarHead(ctx: CanvasRenderingContext2D,
+                            username: string,
+                            cx: number, cy: number, diameter: number,
+                            borderColor: string, borderThickness: number,
+                            outline: boolean) {
+        const r = diameter / 2;
+        const img = getAvatarImage(username);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        if (img) {
+            ctx.drawImage(img, cx - r, cy - r, diameter, diameter);
+        } else {
+            ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+            ctx.fill();
+        }
+        ctx.restore();
+
+        if (borderThickness > 0) {
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            if (outline) {
+                ctx.lineWidth = borderThickness + 1.5;
+                ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+                ctx.stroke();
+            }
+            ctx.lineWidth = borderThickness;
+            ctx.strokeStyle = borderColor;
+            ctx.stroke();
+        }
+    }
+
     function drawFovCircle(ctx: CanvasRenderingContext2D,
                            cx: number, cy: number, r: number,
                            fill: boolean, borderHex: string, fillHex: string) {
@@ -308,6 +363,13 @@
                     }
                     const ax = (a: string) => a === "L" ? bL : a === "R" ? bR : (bL + bR) / 2;
                     const ay = (a: string) => a === "T" ? bT : a === "B" ? bB : (bT + bB) / 2;
+                    if (cfg.avatar_head) {
+                        const diameter = cfg.avatar_head_size;
+                        const cx = ax(cfg.avatar_head_anchor_x) + cfg.avatar_head_offset_x;
+                        const cy = ay(cfg.avatar_head_anchor_y) + cfg.avatar_head_offset_y;
+                        drawAvatarHead(ctx, p.name, cx, cy, diameter,
+                            cfg.avatar_head_border_color, cfg.avatar_head_border_thickness, outline);
+                    }
                     if (cfg.names) {
                         drawText(ctx, p.name || "?",
                             ax(cfg.names_anchor_x) + cfg.names_offset_x,

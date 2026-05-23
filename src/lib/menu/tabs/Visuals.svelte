@@ -82,6 +82,17 @@
             </div>
         </Section>
 
+        <Section title="Avatar head" icon="user" active={$visuals.avatar_head}>
+            <div class="row">
+                <Toggle bind:checked={$visuals.avatar_head} label="Enabled" />
+                <ColorPicker bind:value={$visuals.avatar_head_border_color} />
+            </div>
+            <Slider label="Size" bind:value={$visuals.avatar_head_size}
+                min={8} max={80} step={1} format={(v) => v.toFixed(0) + " px"} />
+            <Slider label="Border" bind:value={$visuals.avatar_head_border_thickness}
+                min={0} max={5} step={0.1} format={(v) => v.toFixed(1)} />
+        </Section>
+
         <Section title="Health" icon="activity" active={$visuals.health}>
             <div class="row">
                 <Toggle bind:checked={$visuals.health} label="Numeric" />

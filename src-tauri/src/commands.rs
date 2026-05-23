@@ -258,5 +258,46 @@ pub fn get_instance_tree(state: State<AppState>) -> Result<InstanceNode, String>
     })
 }
 
+/// Resolve a Roblox username to its 420×420 PNG headshot URL.
+///
+/// Has to run server-side because the Roblox JSON endpoints don't send
+/// `Access-Control-Allow-Origin`, so the webview's own fetch is blocked.
+/// The returned URL is on Roblox's CDN, which images load fine from any
+/// origin — the frontend uses it directly as an `<img src>`.
+#[tauri::command]
+pub async fn get_avatar_url(username: String) -> Result<Option<String>, String> {
+    if username.is_empty() { return Ok(None); }
+
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let r1: serde_json::Value = client
+        .post("https://users.roblox.com/v1/usernames/users")
+        .json(&serde_json::json!({
+            "usernames": [username],
+            "excludeBannedUsers": false,
+        }))
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+
+    let user_id = r1["data"].get(0).and_then(|d| d["id"].as_u64());
+    let Some(user_id) = user_id else { return Ok(None); };
+
+    let url = format!(
+        "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={}&size=420x420&format=Png",
+        user_id
+    );
+    let r2: serde_json::Value = client
+        .get(&url)
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+
+    Ok(r2["data"]
+        .get(0)
+        .and_then(|d| d["imageUrl"].as_str())
+        .map(|s| s.to_string()))
+}
+
 // keep silenced warnings happy if these end up unused later
 #[allow(dead_code)] fn _force_use(_a: u64) -> u64 { let _ = find_child_fast; let _ = read_name_fast; 0 }

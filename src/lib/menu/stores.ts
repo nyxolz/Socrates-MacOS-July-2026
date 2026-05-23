@@ -174,6 +174,18 @@ export type VisualsCfg = {
     health_bar: boolean;
     health_bar_color: string;
 
+    // Avatar head — circular thumbnail anchored to the 2-D box just like
+    // text labels. `size` is a fixed pixel diameter so the head stays the
+    // same on-screen size regardless of how far the player is.
+    avatar_head: boolean;
+    avatar_head_size: number;
+    avatar_head_border_color: string;
+    avatar_head_border_thickness: number;
+    avatar_head_anchor_x: LabelAnchorX;
+    avatar_head_anchor_y: LabelAnchorY;
+    avatar_head_offset_x: number;
+    avatar_head_offset_y: number;
+
     // Filters
     team_check: boolean;
     show_self: boolean;
@@ -232,6 +244,15 @@ export const visuals: Writable<VisualsCfg> = writable({
     health_offset_y: 16,
     health_bar: false,
     health_bar_color: "#ffffff",
+
+    avatar_head: false,
+    avatar_head_size: 28,
+    avatar_head_border_color: "#ffde9d",
+    avatar_head_border_thickness: 1.5,
+    avatar_head_anchor_x: "C",
+    avatar_head_anchor_y: "T",
+    avatar_head_offset_x: 0,
+    avatar_head_offset_y: -18,
 
     team_check: true,
     show_self: false,

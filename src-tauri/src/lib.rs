@@ -196,6 +196,7 @@ pub fn run() {
             commands::get_place_name,
             commands::join_place,
             commands::get_instance_tree,
+            commands::get_avatar_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

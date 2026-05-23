@@ -1,10 +1,26 @@
-<script lang="ts">
+<script lang="ts" context="module">
     export type Node = { name: string; address: string; children: Node[] };
+</script>
+
+<script lang="ts">
+    import { getAvatar } from "../avatar";
     export let node: Node;
     export let depth: number = 0;
+    export let parentName: string = "";
     // Root opens by default, deeper levels stay collapsed.
     let open = depth === 0;
     $: hasChildren = node.children && node.children.length > 0;
+    // A node is treated as a player when its parent is the Players service.
+    // That's the only place in a Roblox DataModel where a node's name is a
+    // username we can resolve to an avatar.
+    $: isPlayer = parentName === "Players" && !!node.name;
+
+    let avatarUrl: string | null = null;
+    $: if (isPlayer) {
+        getAvatar(node.name).then(u => { avatarUrl = u; });
+    } else {
+        avatarUrl = null;
+    }
 
     function copyAddr(e: MouseEvent) {
         e.stopPropagation();
@@ -19,13 +35,20 @@
         {:else}
             <span class="caret hidden">▸</span>
         {/if}
+        {#if isPlayer}
+            <span class="avatar">
+                {#if avatarUrl}
+                    <img src={avatarUrl} alt="" draggable="false" />
+                {/if}
+            </span>
+        {/if}
         <span class="name">{node.name || "(unnamed)"}</span>
         <span class="addr" on:click={copyAddr} title="click to copy">{node.address}</span>
     </button>
     {#if open && hasChildren}
         <div class="children">
             {#each node.children as child}
-                <svelte:self node={child} depth={depth + 1} />
+                <svelte:self node={child} depth={depth + 1} parentName={node.name} />
             {/each}
         </div>
     {/if}
@@ -61,6 +84,21 @@
     }
     .caret.open { transform: rotate(90deg); }
     .caret.hidden { visibility: hidden; }
+    .avatar {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--bg-input);
+        border: 1px solid var(--border);
+        overflow: hidden;
+        flex-shrink: 0;
+        display: inline-flex;
+    }
+    .avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
     .name {
         flex: 1;
         white-space: nowrap;

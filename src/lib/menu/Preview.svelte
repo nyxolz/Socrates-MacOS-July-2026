@@ -1,5 +1,7 @@
 <script lang="ts">
+    import { onMount } from "svelte";
     import { visuals } from "./stores";
+    import { getAvatar } from "./avatar";
 
     // Preview = mock player projected through the real view + projection
     // matrices. The fake camera and skeleton are tuned so the projected
@@ -108,6 +110,12 @@
     const DIST = 42;
     const HP = 87;
 
+    // Sample avatar pulled for the preview. "Roblox" is a permanent account so
+    // the request is reliable; if the fetch fails we just leave a plain border
+    // ring, which still demonstrates positioning.
+    let previewAvatarUrl: string | null = null;
+    onMount(() => { getAvatar("Roblox").then(u => { previewAvatarUrl = u; }); });
+
     // Anchor → box-edge pixel coordinates (preview-space).
     function boxAnchorX(a: "L" | "C" | "R"): number {
         return a === "L" ? BOX.x : a === "R" ? BOX.x + BOX.w : BOX.x + BOX.w / 2;
@@ -128,7 +136,7 @@
     let activePointer = -1;
     let dragStart = { cx: 0, cy: 0, stageLeft: 0, stageTop: 0 };
 
-    function startDrag(kind: "name" | "distance" | "health", e: PointerEvent) {
+    function startDrag(kind: "name" | "distance" | "health" | "avatar", e: PointerEvent) {
         e.stopPropagation();
         e.preventDefault();
         dragging = kind;
@@ -165,6 +173,9 @@
             } else if (dragging === "health") {
                 v.health_anchor_x = ax; v.health_anchor_y = ay;
                 v.health_offset_x = ox; v.health_offset_y = oy;
+            } else if (dragging === "avatar") {
+                v.avatar_head_anchor_x = ax; v.avatar_head_anchor_y = ay;
+                v.avatar_head_offset_x = ox; v.avatar_head_offset_y = oy;
             }
             return v;
         });
@@ -185,6 +196,17 @@
     $: nameStyle = `left: ${nameX}px; top: ${nameY}px; color: ${$visuals.names_color};`;
     $: distStyle = `left: ${distX}px; top: ${distY}px; color: ${$visuals.distance_color};`;
     $: hpStyle   = `left: ${hpX}px;   top: ${hpY}px;   color: ${$visuals.health_color};`;
+
+    // Avatar circle — fixed pixel diameter so the on-screen size is the
+    // same regardless of player distance (matches the real ESP).
+    $: avatarDiameter = $visuals.avatar_head_size;
+    $: avatarCx = boxAnchorX($visuals.avatar_head_anchor_x) + $visuals.avatar_head_offset_x;
+    $: avatarCy = boxAnchorY($visuals.avatar_head_anchor_y) + $visuals.avatar_head_offset_y;
+    $: avatarStyle =
+        `left: ${avatarCx}px; top: ${avatarCy}px; ` +
+        `width: ${avatarDiameter}px; height: ${avatarDiameter}px; ` +
+        `border: ${$visuals.avatar_head_border_thickness}px solid ${$visuals.avatar_head_border_color};` +
+        ($visuals.outline ? ` box-shadow: 0 0 0 1px rgba(0,0,0,0.85);` : ``);
 </script>
 
 <div class="stage" style="width: {W}px; height: {H}px;">
@@ -220,6 +242,19 @@
             box-shadow: {$visuals.outline ? '0 0 0 1px rgba(0,0,0,0.85)' : 'none'};
             background: {$visuals.box2d_fill ? $visuals.box2d_fill_color + '40' : 'transparent'};
         "></div>
+    {/if}
+
+    {#if $visuals.avatar_head}
+        <div class="avatar" style={avatarStyle}
+             class:dragging={dragging === 'avatar'}
+             on:pointerdown={(e) => startDrag('avatar', e)}
+             on:pointermove={onMove}
+             on:pointerup={endDrag}
+             on:pointercancel={endDrag}>
+            {#if previewAvatarUrl}
+                <img src={previewAvatarUrl} alt="" draggable="false" />
+            {/if}
+        </div>
     {/if}
 
     {#if $visuals.health_bar}
@@ -300,6 +335,27 @@
         flex-direction: column-reverse;
     }
     .hpbar-fill { width: 100%; }
+    .avatar {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.4);
+        overflow: hidden;
+        cursor: grab;
+        box-sizing: border-box;
+    }
+    .avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        pointer-events: none;
+    }
+    .avatar.dragging { cursor: grabbing; }
+    .avatar:hover {
+        outline: 1px dashed rgba(255, 222, 157, 0.6);
+        outline-offset: 2px;
+    }
     .label {
         position: absolute;
         transform: translate(-50%, -50%);

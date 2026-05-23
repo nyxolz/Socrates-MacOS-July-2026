@@ -29,6 +29,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 obfstr = "0.4"
 global-hotkey = "0.6"
 keyboard-types = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [profile.release]
 strip = true
