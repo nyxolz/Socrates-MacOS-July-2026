@@ -9,6 +9,7 @@
 //! matched parts wins (so an R6 rig isn't mis-tagged as R15 just because
 //! "Head" alone matches the R15 table).
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -241,13 +242,36 @@ pub fn build_char_cache(sdk: &SdkI, char_addr: u64, humanoid_addr: u64) -> Optio
 /// Per-container child cap, shared by the full walk and the shallow rescan.
 const MAX_CHILDREN_PER_NODE: usize = 256;
 
-/// `(instance, humanoid_ptr)` if `instance` is a character (owns a `Humanoid`
-/// or a `HumanoidRootPart` child), else `None`. `humanoid_ptr` is 0 when only
-/// an HRP was found — `build_char_cache` then reports health as unknown.
-fn character_marker(sdk: &SdkI, instance: u64, humanoid_name: &str, hrp_name: &str) -> Option<u64> {
+/// BETA hard-code: training-dummy rigs own a `Humanoid` / `HumanoidRootPart`
+/// just like a real character, so the marker check treats them as players.
+/// They aren't — skip them by exact name so they never reach ESP / aimbot /
+/// the player list. Acts as if the node simply weren't a character.
+fn is_ignored_character(name: &str) -> bool {
+    matches!(name, "Dummy" | "DPS Dummy")
+}
+
+/// `(instance, humanoid_ptr)` if `instance` is a character, else `None`.
+///
+/// A node is a character when it owns a `Humanoid`, or — for custom rigs that
+/// lack one — when it owns **both** a `HumanoidRootPart` *and* a `Head`.
+/// Requiring the `Head` alongside the HRP filters out stray models/parts that
+/// happen to carry a lone `HumanoidRootPart` without being a real character.
+/// `humanoid_ptr` is 0 when only the HRP+Head pair was found —
+/// `build_char_cache` then reports health as unknown.
+fn character_marker(
+    sdk: &SdkI,
+    instance: u64,
+    humanoid_name: &str,
+    hrp_name: &str,
+    head_name: &str,
+) -> Option<u64> {
     let humanoid = find_child_fast(sdk, instance, humanoid_name);
     if sdk.is_valid_ptr(humanoid) { return Some(humanoid); }
-    if sdk.is_valid_ptr(find_child_fast(sdk, instance, hrp_name)) { return Some(0); }
+    if sdk.is_valid_ptr(find_child_fast(sdk, instance, hrp_name))
+        && sdk.is_valid_ptr(find_child_fast(sdk, instance, head_name))
+    {
+        return Some(0);
+    }
     None
 }
 
@@ -267,42 +291,56 @@ fn character_marker(sdk: &SdkI, instance: u64, humanoid_name: &str, hrp_name: &s
 /// (the local player's username) is filtered out here, the single point of
 /// truth for both ESP and aimbot.
 ///
+/// Traversal is **breadth-first** on purpose: character containers (a `Players`
+/// folder, a `Characters` folder, `Living`, a map model, …) sit near the top
+/// of the tree, while the bulk of a Workspace is deep static geometry. BFS
+/// visits the shallow levels first, so those containers are reached before the
+/// per-walk node budget gets spent diving into deep map parts — a plain DFS
+/// would plunge into the first big model and could exhaust the budget before
+/// ever touching the `Players → Characters` branch.
+///
 /// Bounded by depth / per-node / total-node caps so a huge Workspace can't
 /// stall the cache thread.
 pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec<CharCache>, Vec<u64>) {
-    const MAX_DEPTH: u32 = 6;
-    const MAX_TOTAL_NODES: usize = 3000;
+    const MAX_DEPTH: u32 = 8;
+    const MAX_TOTAL_NODES: usize = 6000;
 
     let humanoid_name = obfstr!("Humanoid").to_string();
     let hrp_name = obfstr!("HumanoidRootPart").to_string();
+    let head_name = obfstr!("Head").to_string();
 
     let mut caches = Vec::new();
     let mut containers: Vec<u64> = Vec::new();
     let mut total = 0usize;
-    // Iterative DFS over `(node, depth)` to avoid deep recursion on the stack.
-    let mut stack: Vec<(u64, u32)> = vec![(workspace, 0)];
+    // Iterative BFS over `(node, depth)`: shallow levels first.
+    let mut queue: VecDeque<(u64, u32)> = VecDeque::new();
+    queue.push_back((workspace, 0));
 
-    while let Some((node, depth)) = stack.pop() {
+    while let Some((node, depth)) = queue.pop_front() {
         if total >= MAX_TOTAL_NODES { break; }
         for c in get_children(sdk, node).into_iter().take(MAX_CHILDREN_PER_NODE) {
             if total >= MAX_TOTAL_NODES { break; }
             total += 1;
 
-            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name) {
-                // Remember the parent path even if the only character here is
-                // ourselves — it's still where players will appear.
-                if !containers.contains(&node) { containers.push(node); }
-                if local_name.is_empty() || read_name_fast(sdk, c) != local_name {
-                    if let Some(cache) = build_char_cache(sdk, c, humanoid) {
-                        caches.push(cache);
+            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name, &head_name) {
+                let cname = read_name_fast(sdk, c);
+                if !is_ignored_character(&cname) {
+                    // Remember the parent path even if the only character here is
+                    // ourselves — it's still where players will appear.
+                    if !containers.contains(&node) { containers.push(node); }
+                    if local_name.is_empty() || cname != local_name {
+                        if let Some(cache) = build_char_cache(sdk, c, humanoid) {
+                            caches.push(cache);
+                        }
                     }
                 }
-                // A character's children are its body parts — never recurse in.
+                // A character's children are its body parts (a dummy's too) —
+                // never recurse in.
                 continue;
             }
 
             if depth + 1 < MAX_DEPTH {
-                stack.push((c, depth + 1));
+                queue.push_back((c, depth + 1));
             }
         }
     }
@@ -316,13 +354,16 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
 pub fn discover_in_containers(sdk: &SdkI, containers: &[u64], local_name: &str) -> Vec<CharCache> {
     let humanoid_name = obfstr!("Humanoid").to_string();
     let hrp_name = obfstr!("HumanoidRootPart").to_string();
+    let head_name = obfstr!("Head").to_string();
 
     let mut caches = Vec::new();
     for &container in containers {
         if !sdk.is_valid_ptr(container) { continue; }
         for c in get_children(sdk, container).into_iter().take(MAX_CHILDREN_PER_NODE) {
-            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name) {
-                if !local_name.is_empty() && read_name_fast(sdk, c) == local_name { continue; }
+            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name, &head_name) {
+                let cname = read_name_fast(sdk, c);
+                if is_ignored_character(&cname) { continue; }
+                if !local_name.is_empty() && cname == local_name { continue; }
                 if let Some(cache) = build_char_cache(sdk, c, humanoid) {
                     caches.push(cache);
                 }

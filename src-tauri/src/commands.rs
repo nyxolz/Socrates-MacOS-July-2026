@@ -4,6 +4,7 @@
 //! background threads / SDK. Feature work (aimbot config, ESP toggles, …)
 //! gets its own command(s) added here as it lands.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use obfstr::obfstr;
@@ -13,7 +14,7 @@ use tauri::State;
 use crate::offsets;
 use crate::overlay::InteractiveRect;
 use crate::players::{find_child_fast, read_name_fast};
-use crate::sdk::{self, SdkI};
+use crate::sdk::{self, Instance, SdkI};
 use crate::state::{AimbotCfg, AppState, RobloxBounds, VisualsCfg, ZoneInput};
 
 #[tauri::command]
@@ -273,8 +274,15 @@ pub struct InstanceNode {
 
 /// Walk the DataModel recursively and return a capped tree. Caps keep the
 /// payload sane (a real DataModel can hold tens of thousands of nodes).
+///
+/// `reveal` (optional hex address, e.g. the Player List's char_addr) makes the
+/// walk "reveal-aware": the chain of ancestors from that node up to the
+/// DataModel is force-included even past the depth / per-node caps, so the
+/// target is guaranteed present in the returned tree. Without it, a player
+/// nested deeper than `MAX_DEPTH` — or past a parent's child cap — wouldn't
+/// appear, which is what made "View in explorer" land on nothing.
 #[tauri::command]
-pub fn get_instance_tree(state: State<AppState>) -> Result<InstanceNode, String> {
+pub fn get_instance_tree(state: State<AppState>, reveal: Option<String>) -> Result<InstanceNode, String> {
     let sdk = state.sdk.lock().unwrap().clone().ok_or_else(|| "not attached".to_string())?;
     let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
     if !sdk.is_valid_ptr(fdm) { return Err("no fake datamodel".into()); }
@@ -283,19 +291,46 @@ pub fn get_instance_tree(state: State<AppState>) -> Result<InstanceNode, String>
 
     const MAX_DEPTH: u32 = 5;
     const MAX_CHILDREN_PER_NODE: usize = 200;
-    const MAX_TOTAL_NODES: usize = 4000;
+    const MAX_TOTAL_NODES: usize = 6000;
 
-    fn build(sdk: &SdkI, instance: u64, depth: u32, total: &mut usize) -> Option<InstanceNode> {
+    // Ancestor chain of the reveal target (inclusive of target and DataModel),
+    // found by walking `Instance::Parent` pointers upward. Empty when there's
+    // nothing to reveal. Nodes in this set bypass the depth / child caps.
+    let path: HashSet<u64> = match reveal
+        .as_deref()
+        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+    {
+        Some(target) if target != 0 => {
+            let mut set = HashSet::new();
+            let mut cur = target;
+            let mut guard = 0;
+            while sdk.is_valid_ptr(cur) && guard < 64 {
+                set.insert(cur);
+                if cur == dm { break; }
+                cur = sdk.read::<u64>(cur + Instance::Parent as u64);
+                guard += 1;
+            }
+            set
+        }
+        _ => HashSet::new(),
+    };
+
+    fn build(sdk: &SdkI, instance: u64, depth: u32, total: &mut usize, path: &HashSet<u64>) -> Option<InstanceNode> {
         if !sdk.is_valid_ptr(instance) { return None; }
         if *total >= MAX_TOTAL_NODES { return None; }
         *total += 1;
         let name = sdk::name_of(sdk, instance);
         let address = format!("0x{:X}", instance);
+        // Descend past the depth cap only along the reveal path.
+        let on_path = path.contains(&instance);
         let mut children = Vec::new();
-        if depth < MAX_DEPTH {
-            for c in sdk::get_children(sdk, instance).into_iter().take(MAX_CHILDREN_PER_NODE) {
+        if depth < MAX_DEPTH || on_path {
+            for (i, c) in sdk::get_children(sdk, instance).into_iter().enumerate() {
                 if *total >= MAX_TOTAL_NODES { break; }
-                if let Some(n) = build(sdk, c, depth + 1, total) {
+                // Honour the per-node cap unless this child is itself on the
+                // reveal path (then keep it even past the cap).
+                if i >= MAX_CHILDREN_PER_NODE && !path.contains(&c) { continue; }
+                if let Some(n) = build(sdk, c, depth + 1, total, path) {
                     children.push(n);
                 }
             }
@@ -306,7 +341,7 @@ pub fn get_instance_tree(state: State<AppState>) -> Result<InstanceNode, String>
     let mut total = 0usize;
     let root_children: Vec<InstanceNode> = sdk::get_children(&sdk, dm)
         .into_iter()
-        .filter_map(|c| build(&sdk, c, 1, &mut total))
+        .filter_map(|c| build(&sdk, c, 1, &mut total, &path))
         .collect();
     let root_name = sdk::name_of(&sdk, dm);
     Ok(InstanceNode {

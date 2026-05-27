@@ -2,6 +2,7 @@
     import { onMount, onDestroy } from "svelte";
     import { invoke } from "@tauri-apps/api/core";
     import Section from "../controls/Section.svelte";
+    import { activeTab, explorerReveal } from "../stores";
 
     type PlayerEntry = {
         char_addr: string;
@@ -22,7 +23,6 @@
     // departed ones are removed; existing ones update in place (preserving
     // their slot). Map iteration order = insertion order in JS.
     let players = new Map<string, PlayerEntry>();
-    let spectating: string | null = null;
     let timer = 0;
 
     async function refresh() {
@@ -35,15 +35,14 @@
         }
         for (const p of list) players.set(p.char_addr, p); // update or append
         players = players; // trigger reactivity
-
-        try { spectating = await invoke<string | null>("get_spectate_target"); }
-        catch { /* keep */ }
     }
 
-    async function spectate(addr: string) {
-        const tgt = spectating === addr ? null : addr;
-        await invoke("set_spectate_target", { target: tgt });
-        spectating = tgt;
+    // Jump to the Explorer and reveal this player's instance. char_addr is the
+    // same hex the Explorer prints as a node address, so the Explorer can match
+    // and expand the path straight to it.
+    function viewInExplorer(addr: string) {
+        explorerReveal.set(addr);
+        activeTab.set("Explorer");
     }
 
     async function setRelation(p: PlayerEntry, relation: number) {
@@ -82,9 +81,9 @@
                 </div>
                 <button
                     class="spec"
-                    class:active={spectating === p.char_addr}
-                    on:click={() => spectate(p.char_addr)}
-                >{spectating === p.char_addr ? "Stop" : "Spectate"}</button>
+                    title="Reveal in Explorer"
+                    on:click={() => viewInExplorer(p.char_addr)}
+                >View in explorer</button>
             </div>
         {/each}
     </Section>
@@ -156,10 +155,5 @@
         cursor: pointer;
         transition: border-color 140ms var(--ease), color 140ms var(--ease), background 140ms var(--ease);
     }
-    .spec:hover { border-color: var(--accent); }
-    .spec.active {
-        background: rgba(0, 0, 0, 0.3);
-        border-color: var(--accent);
-        color: var(--accent);
-    }
+    .spec:hover { border-color: var(--accent); color: var(--accent); }
 </style>

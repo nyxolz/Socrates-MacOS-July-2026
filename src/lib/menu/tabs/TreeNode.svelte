@@ -3,13 +3,42 @@
 </script>
 
 <script lang="ts">
+    import { onMount, tick } from "svelte";
     import { getAvatar } from "../avatar";
     export let node: Node;
     export let depth: number = 0;
     export let parentName: string = "";
+    // Address the Explorer was asked to reveal (or null). Propagated unchanged
+    // down the tree so every node on the path can react.
+    export let reveal: string | null = null;
     // Root opens by default, deeper levels stay collapsed.
     let open = depth === 0;
     $: hasChildren = node.children && node.children.length > 0;
+
+    let rowEl: HTMLElement;
+    let flash = false;
+
+    // True if `addr` is this node or any descendant — i.e. we're on the path
+    // to the reveal target and must expand so the cascade reaches it.
+    function subtreeHas(n: Node, addr: string): boolean {
+        if (n.address === addr) return true;
+        return n.children?.some((c) => subtreeHas(c, addr)) ?? false;
+    }
+
+    // Cascade reveal: ancestors open (mounting their children, whose own
+    // onMount continues the cascade); the target node scrolls into view and
+    // flashes. Runs once per mount, so manual collapse afterwards isn't fought.
+    onMount(async () => {
+        if (!reveal) return;
+        if (reveal === node.address) {
+            flash = true;
+            await tick();
+            rowEl?.scrollIntoView({ block: "center", behavior: "smooth" });
+            setTimeout(() => (flash = false), 2200);
+        } else if (hasChildren && subtreeHas(node, reveal)) {
+            open = true;
+        }
+    });
     // A node is treated as a player when its parent is the Players service.
     // That's the only place in a Roblox DataModel where a node's name is a
     // username we can resolve to an avatar.
@@ -29,7 +58,7 @@
 </script>
 
 <div class="node">
-    <button class="row" on:click={() => (open = !open)} style="padding-left: {depth * 10 + 4}px;">
+    <button bind:this={rowEl} class="row" class:flash on:click={() => (open = !open)} style="padding-left: {depth * 10 + 4}px;">
         {#if hasChildren}
             <span class="caret" class:open>▸</span>
         {:else}
@@ -48,7 +77,7 @@
     {#if open && hasChildren}
         <div class="children">
             {#each node.children as child}
-                <svelte:self node={child} depth={depth + 1} parentName={node.name} />
+                <svelte:self node={child} depth={depth + 1} parentName={node.name} {reveal} />
             {/each}
         </div>
     {/if}
@@ -74,6 +103,17 @@
         border-radius: 3px;
     }
     .row:hover { background: var(--bg-input); }
+    .row.flash {
+        animation: reveal-flash 2.2s var(--ease);
+    }
+    @keyframes reveal-flash {
+        0%, 30% {
+            background: var(--accent);
+            color: #000;
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+        100% { background: transparent; }
+    }
     .caret {
         width: 10px;
         font-size: 8px;

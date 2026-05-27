@@ -34,6 +34,12 @@ export const updateAvailable: Writable<boolean> = writable(false);
 
 export const activeTab: Writable<TabId> = writable("Aiming");
 
+// Cross-tab channel: hex address (e.g. "0x1234") the Explorer should reveal —
+// expand the path to it, scroll it into view, and flash it. Set by the Player
+// List's "View in explorer" button (alongside flipping `activeTab` to
+// "Explorer"); the Explorer consumes and clears it once the tree has loaded.
+export const explorerReveal: Writable<string | null> = writable(null);
+
 // Theme accent — persisted in localStorage. Subscribe in Menu.svelte to
 // reflect the colour into `--accent` etc. on the menu element.
 const THEME_KEY = "socrate.theme";

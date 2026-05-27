@@ -1,18 +1,25 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import { get } from "svelte/store";
     import { invoke } from "@tauri-apps/api/core";
     import Section from "../controls/Section.svelte";
+    import { explorerReveal } from "../stores";
     import TreeNode, { type Node } from "./TreeNode.svelte";
 
     let root: Node | null = null;
     let error = "";
     let loading = false;
+    // Address the Player List asked us to reveal. Consumed (and the store
+    // cleared) on mount so navigating back to the Explorer later doesn't
+    // re-trigger an old jump. Passed down the tree; the matching node expands
+    // its ancestors, scrolls into view and flashes.
+    let reveal: string | null = null;
 
     async function refresh() {
         loading = true;
         error = "";
         try {
-            root = await invoke<Node>("get_instance_tree");
+            root = await invoke<Node>("get_instance_tree", { reveal });
         } catch (e) {
             error = String(e);
             root = null;
@@ -21,7 +28,11 @@
         }
     }
 
-    onMount(refresh);
+    onMount(() => {
+        reveal = get(explorerReveal);
+        explorerReveal.set(null);
+        refresh();
+    });
 </script>
 
 <div class="stack">
@@ -34,7 +45,7 @@
         </div>
         <div class="tree">
             {#if root}
-                <TreeNode node={root} />
+                <TreeNode node={root} {reveal} />
             {:else if !loading && !error}
                 <div class="empty">no datamodel yet</div>
             {/if}
