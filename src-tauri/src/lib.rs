@@ -15,6 +15,7 @@ mod spectate;
 mod security;
 mod input;
 mod menu_hotkey;
+mod version;
 
 use std::ptr;
 
@@ -189,14 +190,18 @@ pub fn run() {
             commands::set_aimbot_config,
             commands::set_visuals_config,
             commands::set_menu_toggle_bind,
+            commands::get_self_ram_bytes,
             commands::diag_check,
             commands::list_players,
             commands::set_spectate_target,
             commands::get_spectate_target,
+            commands::set_player_relation,
             commands::get_place_name,
             commands::join_place,
             commands::get_instance_tree,
             commands::get_avatar_url,
+            commands::get_version,
+            commands::check_remote_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

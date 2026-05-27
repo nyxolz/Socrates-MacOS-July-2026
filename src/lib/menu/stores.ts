@@ -7,7 +7,8 @@ export type TabId =
     | "Options"
     | "Player List"
     | "Explorer"
-    | "Servers";
+    | "Servers"
+    | "Settings";
 
 export const TABS: TabId[] = [
     "Aiming",
@@ -17,7 +18,19 @@ export const TABS: TabId[] = [
     "Player List",
     "Explorer",
     "Servers",
+    "Settings",
 ];
+
+// Filled by the global poller in Menu.svelte (so the check runs regardless
+// of which tab is active). Settings.svelte just displays them.
+export const localVersion: Writable<string> = writable("…");
+export const remoteVersion: Writable<string> = writable("…");
+export const lastVersionCheck: Writable<number | null> = writable(null);
+
+// Flipped to `true` by the global poller once the remote `socrate_version`
+// differs from the compile-time `VERSION`. TabBar reads this to render a
+// small red "i" badge on the Settings tab — visible from any other tab.
+export const updateAvailable: Writable<boolean> = writable(false);
 
 export const activeTab: Writable<TabId> = writable("Aiming");
 

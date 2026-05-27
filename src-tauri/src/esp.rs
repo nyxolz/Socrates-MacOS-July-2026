@@ -18,7 +18,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use obfstr::obfstr;
 
 use crate::aimbot::current_cursor;
-use crate::math::{build_projection_matrix, build_view_matrix, segment_to_ndc, world_to_ndc, world_to_offscreen_dir};
+use crate::math::{build_projection_matrix, build_view_matrix, fov_from_zoom, segment_to_ndc, world_to_ndc, world_to_offscreen_dir};
 use crate::offsets;
 use crate::overlay::TITLEBAR_HEIGHT;
 use crate::players::read_pos_fast;
@@ -47,6 +47,9 @@ pub struct EspPlayer {
     pub box3d: Vec<[f32; 4]>,           // up to 12 edges
     pub view_dir: Option<[f32; 4]>,     // 1 segment
     pub skeleton: Vec<[f32; 4]>,        // segments
+    /// 0 = enemy (full ESP), 1 = ally (only a green head dot is drawn).
+    /// Neutrals are never emitted into the frame.
+    pub relation: u8,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -170,7 +173,10 @@ pub fn start_esp_thread(app_handle: AppHandle) {
             let (win_w, win_h) = bounds.map(|(_, _, w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
             let render_h = (win_h - TITLEBAR_HEIGHT as f64).max(1.0);
             let aspect = (win_w / render_h) as f32;
-            let fov = 70.0_f32;
+            // FOV is derived from the camera's zoom factor `c` (third component
+            // of the viewport Vec3 at `Camera + Fov`), not hardcoded.
+            let zoom = sdk.read::<f32>(camera_ptr + offsets::Camera::Fov as u64 + 8);
+            let fov = fov_from_zoom(zoom);
             let view = build_view_matrix(cam_pos, matrix);
             let proj = build_projection_matrix(fov, aspect, 0.5, 400.0);
 
@@ -178,11 +184,18 @@ pub fn start_esp_thread(app_handle: AppHandle) {
 
             let caches = state.char_caches.lock().unwrap().clone();
             let visuals = state.visuals_cfg.lock().unwrap().clone();
+            let relations = state.player_relations.lock().unwrap().clone();
             let max_dist = visuals.max_distance;
             let min_dist = visuals.min_distance.max(0.0);
 
             let mut players: Vec<EspPlayer> = Vec::with_capacity(caches.len());
             for cache in caches.iter() {
+                // Relation gate: neutrals (2) are never drawn; allies (1) get
+                // only a green head dot (handled below); enemies (0) get the
+                // full ESP build.
+                let relation = relations.get(&cache.name).copied().unwrap_or(0);
+                if relation == 2 { continue; }
+
                 // Read every valid part once; reuse for skeleton + box2d
                 // bounding + box centre choice.
                 let mut world_positions: [Option<[f32; 3]>; 11] = [None; 11];
@@ -205,6 +218,30 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                 let dy = anchor[1] - cam_pos[1];
                 let dz = anchor[2] - cam_pos[2];
                 let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+
+                // Allies: emit a stripped payload carrying only the head
+                // anchor (for the green dot) — no boxes / skeleton / text, and
+                // independent of the ESP distance filters so teammates stay
+                // marked at any range.
+                if relation == 1 {
+                    let head_ndc = head_world.and_then(|h| world_to_ndc(h, view, proj))
+                        .or_else(|| world_to_ndc(anchor, view, proj));
+                    if head_ndc.is_some() {
+                        players.push(EspPlayer {
+                            name: cache.name.clone(),
+                            distance,
+                            health: -1.0,
+                            head: head_ndc,
+                            box2d: None,
+                            box3d: Vec::new(),
+                            view_dir: None,
+                            skeleton: Vec::new(),
+                            relation: 1,
+                        });
+                    }
+                    continue;
+                }
+
                 if distance < min_dist { continue; }
                 if distance > max_dist { continue; }
 
@@ -240,6 +277,26 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     }
                 }
 
+                // Extend arms/legs to the hands/feet (R15 has no part there),
+                // so the skeleton covers the full limb. The extra world tips
+                // also feed the box bounds below.
+                let mut limb_tips: Vec<[f32; 3]> = Vec::with_capacity(4);
+                for &(from, to, factor) in cache.tips() {
+                    let (pf, pt) = match (world_positions[from], world_positions[to]) {
+                        (Some(pf), Some(pt)) => (pf, pt),
+                        _ => continue,
+                    };
+                    let tip = [
+                        pt[0] + (pt[0] - pf[0]) * factor,
+                        pt[1] + (pt[1] - pf[1]) * factor,
+                        pt[2] + (pt[2] - pf[2]) * factor,
+                    ];
+                    if let Some((na, nb)) = segment_to_ndc(pt, tip, view, proj) {
+                        skeleton.push([na[0], na[1], nb[0], nb[1]]);
+                    }
+                    limb_tips.push(tip);
+                }
+
                 // Head NDC (text anchor) — falls back to centre projection.
                 let head_ndc = head_world.and_then(|h| world_to_ndc(h, view, proj))
                     .or_else(|| world_to_ndc(anchor, view, proj));
@@ -254,10 +311,10 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                         for &v in &[seg[0], seg[2]] { xmin = xmin.min(v); xmax = xmax.max(v); }
                         for &v in &[seg[1], seg[3]] { ymin = ymin.min(v); ymax = ymax.max(v); }
                     }
-                    // Small horizontal padding (~15 %) so the box doesn't
-                    // hug the body; the y axis already has the head.
-                    let px = (xmax - xmin) * 0.15;
-                    let py = (ymax - ymin) * 0.05;
+                    // Padding so the box doesn't hug the body. A bit roomier
+                    // now that limb tips push the bounds out to hands/feet.
+                    let px = (xmax - xmin) * 0.25;
+                    let py = (ymax - ymin) * 0.10;
                     box2d = Some([xmin - px, ymin - py, xmax + px, ymax + py]);
                 }
 
@@ -274,7 +331,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     let mut ymax = f32::NEG_INFINITY;
                     let mut zmin = f32::INFINITY;
                     let mut zmax = f32::NEG_INFINITY;
-                    for p in world_positions.iter().filter_map(|p| *p) {
+                    for p in world_positions.iter().filter_map(|p| *p).chain(limb_tips.iter().copied()) {
                         xmin = xmin.min(p[0]); xmax = xmax.max(p[0]);
                         ymin = ymin.min(p[1]); ymax = ymax.max(p[1]);
                         zmin = zmin.min(p[2]); zmax = zmax.max(p[2]);
@@ -334,6 +391,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     box3d,
                     view_dir,
                     skeleton,
+                    relation: 0,
                 });
             }
 

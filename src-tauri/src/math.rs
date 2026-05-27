@@ -20,6 +20,19 @@ pub fn build_view_matrix(cam_pos: [f32; 3], cam_rot_3x3: [[f32; 3]; 3]) -> [[f32
     ]
 }
 
+/// Recover the camera's vertical FOV (in degrees) from the zoom factor `c`
+/// stored as the third component of the viewport Vec3 at `Camera + Fov`.
+///
+/// `fov = 2·atan(1/(2c))·180/π`. Example: `c = 0.629 → ~76.9°`, `c = 2.572 → 22°`.
+/// Falls back to 70° if `c` is degenerate (zero / non-finite).
+pub fn fov_from_zoom(c: f32) -> f32 {
+    if c.is_finite() && c > 1e-4 {
+        (2.0 * (1.0 / (2.0 * c)).atan()).to_degrees()
+    } else {
+        70.0
+    }
+}
+
 pub fn build_projection_matrix(fov_deg: f32, aspect_ratio: f32, near: f32, far: f32) -> [[f32; 4]; 4] {
     let fov_rad = fov_deg.to_radians();
     let f = 1.0 / (fov_rad / 2.0).tan();

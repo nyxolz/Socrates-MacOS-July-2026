@@ -52,8 +52,28 @@ if ! rustup target list --installed 2>/dev/null | grep -q "^${TARGET}$"; then
     rustup target add "${TARGET}"
 fi
 
+generate_hash() {
+  LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 10
+  echo
+}
+
+# Generate the build-stamp BEFORE compiling so it ends up baked into the
+# binary. The Settings tab compares this constant against status.json to
+# decide if an update banner should show.
+SOCRATE_VERSION="$(generate_hash)"
+VERSION_RS="${SOCRATE_DIR}/src-tauri/src/version.rs"
+[ -f "${VERSION_RS}" ] || die "src-tauri/src/version.rs missing"
+# Format of the matched line is load-bearing (see version.rs comment).
+sed -i.bak -E "s|^pub const VERSION: &str = .*$|pub const VERSION: \&str = \"${SOCRATE_VERSION}\";|" "${VERSION_RS}"
+rm -f "${VERSION_RS}.bak"
+say "Baked VERSION=${SOCRATE_VERSION} into version.rs"
+
 # ─── Build ──────────────────────────────────────────────────────────
 cd "${SOCRATE_DIR}"
+# SvelteKit's `rimraf` on .svelte-kit/output races with macOS Finder /
+# Spotlight and throws ENOTEMPTY ~1 build in 5. Pre-clean it ourselves so
+# vite never has to rmSync the tree it doesn't own.
+rm -rf .svelte-kit/output build
 say "Building for ${TARGET}..."
 npm run tauri build -- --target "${TARGET}"
 
@@ -72,13 +92,6 @@ say "Copied to ${WEBSITE_DIR}/${DMG_NAME}"
 #   { "Socrate": { "Updated_for_roblox_v": "...", "arm": "...", "intel": "..." } }
 STATUS_JSON="${WEBSITE_DIR}/status.json"
 DMG_URL="${REMOTE_RAW_BASE}/${DMG_NAME}"
-
-generate_hash() {
-  LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 10
-  echo
-}
-
-SOCRATE_VERSION="$(generate_hash)"
 
 if [ ! -f "${STATUS_JSON}" ]; then
     cat > "${STATUS_JSON}" <<'EOF'

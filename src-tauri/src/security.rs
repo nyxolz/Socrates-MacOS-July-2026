@@ -1,20 +1,3 @@
-//! Runtime hardening — anti-RE, anti-debug, anti-Frida.
-//!
-//! This module trades a few microseconds at boot + a tiny background thread
-//! for several layers of obstruction:
-//!
-//! 1. **Frida / hook scan**  — walk `_dyld_image_count`, look for known
-//!    instrumentation libraries.
-//! 2. **Parent name check** — if our parent process is `lldb`, `gdb`,
-//!    `dtrace`, `frida`, etc. we silently exit.
-//! 3. **`sysctl(P_TRACED)`** — second line behind `ptrace(PT_DENY_ATTACH)`
-//!    in case the attach happens between our init calls.
-//! 4. **Offset XOR**         — the entry offset chain (FakeDataModel →
-//!    Camera) is XOR'd at compile time with a runtime-derived key so a
-//!    plain `strings` / hex grep doesn't surface `0x5F498F0` etc.
-//! 5. **Opaque predicates**  — `always_true()` / `always_false()` that
-//!    look variable to static analysis but are constant at runtime; sprinkle
-//!    in critical paths to confuse IDA's control-flow inference.
 
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU64, Ordering};

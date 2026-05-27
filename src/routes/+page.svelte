@@ -22,6 +22,7 @@
         box3d: [number, number, number, number][];
         view_dir: [number, number, number, number] | null;
         skeleton: [number, number, number, number][];
+        relation: number; // 0 = enemy (full ESP), 1 = ally (green head dot)
     };
     type EspFrame = {
         markers: Marker[];
@@ -163,6 +164,7 @@
         ctx.strokeStyle = color;
         ctx.strokeRect(x, y, w, h);
     }
+
 
     function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
                       color: string, outline: boolean, size = 11) {
@@ -325,6 +327,17 @@
             const outline = cfg.outline;
 
             for (const p of lastFrame.players) {
+                // Allies: a green "[Ally]" label above the head, no other ESP.
+                // Backend already strips the geometry, but we still skip the
+                // enemy draw block so name/distance/health labels don't show
+                // for teammates.
+                if (p.relation === 1) {
+                    if (p.head) {
+                        const hp = ndcToScreen(p.head[0], p.head[1]);
+                        drawText(ctx, "[Ally]", hp.x, hp.y - 8, "#22e06a", outline, 10);
+                    }
+                    continue;
+                }
                 if (cfg.tracers && p.head) {
                     drawTracer(ctx, p.head, cfg.tracers_origin,
                         cfg.tracers_color, cfg.tracers_thickness, outline);

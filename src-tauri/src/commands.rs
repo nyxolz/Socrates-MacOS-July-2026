@@ -43,6 +43,46 @@ pub fn panic_exit() {
     std::process::exit(0);
 }
 
+/// Current resident-set size of *this* process in bytes. Read directly from
+/// `task_info(mach_task_self, MACH_TASK_BASIC_INFO)` so it matches what
+/// Activity Monitor shows for "Memory" — no shell-out, no allocation.
+#[tauri::command]
+pub fn get_self_ram_bytes() -> u64 {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        // mach_task_basic_info layout (xnu osfmk/mach/task_info.h):
+        //   virtual_size, resident_size, resident_size_max : u64
+        //   user_time, system_time : time_value_t (2x i32)
+        //   policy : i32
+        //   suspend_count : i32
+        // Count = struct size / sizeof(natural_t=u32) = 48/4 = 12.
+        #[repr(C)]
+        struct MachTaskBasicInfo {
+            virtual_size: u64,
+            resident_size: u64,
+            resident_size_max: u64,
+            user_time: [i32; 2],
+            system_time: [i32; 2],
+            policy: i32,
+            suspend_count: i32,
+        }
+        unsafe extern "C" {
+            fn mach_task_self() -> u32;
+            fn task_info(target: u32, flavor: u32, info: *mut MachTaskBasicInfo, count: *mut u32) -> i32;
+        }
+        const MACH_TASK_BASIC_INFO: u32 = 20;
+        let mut info = MachTaskBasicInfo {
+            virtual_size: 0, resident_size: 0, resident_size_max: 0,
+            user_time: [0, 0], system_time: [0, 0], policy: 0, suspend_count: 0,
+        };
+        let mut count: u32 = 12;
+        if task_info(mach_task_self(), MACH_TASK_BASIC_INFO, &mut info, &mut count) == 0 {
+            return info.resident_size;
+        }
+    }
+    0
+}
+
 /// Attach to a running Roblox process. Stores the resulting SDK in AppState
 /// for any later command / background thread to use. Returns the static base
 /// address for sanity-checking from the UI.
@@ -102,6 +142,8 @@ pub struct PlayerEntry {
     pub name: String,
     pub distance: f32,
     pub health: f32,
+    /// 0 = enemy (default), 1 = ally, 2 = neutral.
+    pub relation: u8,
 }
 
 #[tauri::command]
@@ -115,6 +157,7 @@ pub fn list_players(state: State<AppState>) -> Vec<PlayerEntry> {
     let cam_pos = resolve_cam_pos(&sdk).unwrap_or([0.0; 3]);
 
     let caches = state.char_caches.lock().unwrap().clone();
+    let relations = state.player_relations.lock().unwrap().clone();
     let mut list: Vec<PlayerEntry> = caches.iter().filter_map(|c| {
         let (prim, valid) = c.parts[0];
         if !valid { return None; }
@@ -135,6 +178,7 @@ pub fn list_players(state: State<AppState>) -> Vec<PlayerEntry> {
             name: c.name.clone(),
             distance,
             health,
+            relation: relations.get(&c.name).copied().unwrap_or(0),
         })
     }).collect();
     list.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
@@ -171,6 +215,20 @@ pub fn set_spectate_target(state: State<AppState>, target: Option<String>) {
 pub fn get_spectate_target(state: State<AppState>) -> Option<String> {
     let v = *state.spectate_target.lock().unwrap();
     if v == 0 { None } else { Some(format!("0x{:X}", v)) }
+}
+
+/// Set a player's relation by name. `relation`: 0 = enemy, 1 = ally,
+/// 2 = neutral. Enemy is the default, so storing 0 just drops the entry to
+/// keep the map small. Keyed by name (not char_addr) so it survives respawns.
+#[tauri::command]
+pub fn set_player_relation(state: State<AppState>, name: String, relation: u8) {
+    if name.is_empty() { return; }
+    let mut relations = state.player_relations.lock().unwrap();
+    if relation == 0 {
+        relations.remove(&name);
+    } else {
+        relations.insert(name, relation);
+    }
 }
 
 
@@ -297,6 +355,34 @@ pub async fn get_avatar_url(username: String) -> Result<Option<String>, String> 
         .get(0)
         .and_then(|d| d["imageUrl"].as_str())
         .map(|s| s.to_string()))
+}
+
+// ─── Versioning / self-update ────────────────────────────────────────────
+
+/// Compile-time version hash baked in by `builder_sender.sh`. Cheap enough
+/// the Settings tab calls it on every render.
+#[tauri::command]
+pub fn get_version() -> &'static str {
+    crate::version::VERSION
+}
+
+/// Fetch the version currently published at usesocrate.xyz. Returns the
+/// raw `socrate_version` string; the frontend compares against `get_version`
+/// to decide if an update banner should show.
+#[tauri::command]
+pub async fn check_remote_version() -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body: serde_json::Value = client
+        .get("https://usesocrate.xyz/status.json")
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    body["Socrate"]["socrate_version"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "socrate_version missing".to_string())
 }
 
 // keep silenced warnings happy if these end up unused later

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activeTab, TABS, type TabId } from "./stores";
+    import { activeTab, TABS, updateAvailable, type TabId } from "./stores";
 
     function set(t: TabId) {
         activeTab.set(t);
@@ -11,10 +11,14 @@
         <button
             class="tab"
             class:active={$activeTab === t}
+            class:alert={t === "Settings" && $updateAvailable}
             on:click={() => set(t)}
-            title={t}
+            title={t === "Settings" && $updateAvailable ? "Update available" : t}
         >
             <span class="label">{t}</span>
+            {#if t === "Settings" && $updateAvailable}
+                <span class="dot" aria-label="update available">i</span>
+            {/if}
         </button>
     {/each}
 </div>
@@ -55,5 +59,24 @@
         background: rgba(255, 222, 157, 0.10);
         border-color: var(--accent);
         color: var(--accent);
+    }
+    .tab.alert {
+        border-color: #ff5b5b;
+        box-shadow: 0 0 6px rgba(255, 91, 91, 0.45);
+    }
+    .dot {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 12px;
+        height: 12px;
+        margin-left: 6px;
+        border-radius: 50%;
+        background: #ff5b5b;
+        color: #fff;
+        font-size: 9px;
+        font-weight: 700;
+        font-style: italic;
+        line-height: 1;
     }
 </style>

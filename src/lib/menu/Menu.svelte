@@ -1,7 +1,8 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { invoke } from "@tauri-apps/api/core";
-    import { activeTab, theme, menuOptions } from "./stores";
+    import { activeTab, theme, menuOptions, localVersion, remoteVersion, lastVersionCheck, updateAvailable } from "./stores";
+    import { get } from "svelte/store";
     import { startConfigBridge } from "./bridge";
     import TabBar from "./TabBar.svelte";
     import Aiming from "./tabs/Aiming.svelte";
@@ -11,6 +12,7 @@
     import PlayerList from "./tabs/PlayerList.svelte";
     import Explorer from "./tabs/Explorer.svelte";
     import Servers from "./tabs/Servers.svelte";
+    import Settings from "./tabs/Settings.svelte";
     import Icon from "./controls/Icon.svelte";
     import "./tokens.css";
 
@@ -34,6 +36,25 @@
     let headerEl: HTMLDivElement;
     let resizeObs: ResizeObserver | undefined;
     let stopBridge: (() => void) | undefined;
+    let socrateVersion = "…";
+    let versionTimer = 0;
+
+    async function pollRemoteVersion() {
+        try {
+            const r = await invoke<string>("check_remote_version");
+            remoteVersion.set(r);
+            lastVersionCheck.set(Date.now());
+        } catch {
+            remoteVersion.set("offline");
+        }
+        const local = get(localVersion);
+        const remote = get(remoteVersion);
+        updateAvailable.set(
+            local !== "…" && local !== "unknown" &&
+            remote !== "…" && remote !== "offline" &&
+            remote !== local
+        );
+    }
 
     // Portrait shape — wide enough for a 2-column body, tall enough to fill
     // most of the Roblox window. Width is fixed; height is `85vh` clamped.
@@ -112,11 +133,28 @@
         resizeObs.observe(menuEl);
         window.addEventListener("resize", () => { clampToViewport(); pushZone(); });
         stopBridge = startConfigBridge();
+        // Compile-time hash baked by builder_sender.sh into version.rs.
+        invoke<string>("get_version")
+            .then(v => {
+                socrateVersion = `Version Hash ${v}`;
+                localVersion.set(v);
+                // First poll right after we know the local version so the
+                // badge can flip on within the first 4-second window.
+                pollRemoteVersion();
+            })
+            .catch(() => {
+                socrateVersion = "Version Hash unknown";
+                localVersion.set("unknown");
+            });
+        // Keep polling regardless of which tab is active — that's the whole
+        // point of running this in Menu instead of Settings.
+        versionTimer = window.setInterval(pollRemoteVersion, 4000);
     });
 
     onDestroy(() => {
         resizeObs?.disconnect();
         stopBridge?.();
+        clearInterval(versionTimer);
     });
 </script>
 
@@ -137,7 +175,7 @@
         on:pointercancel={onPointerUp}
     >
         <span class="brand">Socrate</span>
-        <span class="version">v0.1.2 (Beta Release) https://usesocrate.xyz/</span>
+        <span class="version">{socrateVersion} · https://usesocrate.xyz/</span>
         <span class="spacer"></span>
         <button class="iconbtn" title={minimized ? "Restore" : "Minimize"}
                 on:click|stopPropagation={toggleMinimize}
@@ -167,6 +205,8 @@
                 <Explorer />
             {:else if $activeTab === "Servers"}
                 <Servers />
+            {:else if $activeTab === "Settings"}
+                <Settings />
             {/if}
         </div>
     {/if}
@@ -187,6 +227,16 @@
         overflow: hidden;
         pointer-events: auto;
         will-change: left, top;
+        /* Lock down text selection / copy across the whole menu UI. Inputs
+         * inside still work because the global rule below re-enables them. */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-user-drag: none;
+    }
+    .window :global(input),
+    .window :global(textarea) {
+        -webkit-user-select: text;
+        user-select: text;
     }
     .window.hidden {
         display: none;

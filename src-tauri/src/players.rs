@@ -62,6 +62,19 @@ pub const SKELETON_SEGMENTS_R6: [(usize, usize); 5] = [
 /// Degenerate fallback — just a line between Head and HumanoidRootPart.
 pub const SKELETON_SEGMENTS_HRP: [(usize, usize); 1] = [(0, 1)];
 
+/// Limb-tip extensions: `(from, to, factor)`. R15 has no dedicated hand/foot
+/// part, so its arm/leg bones stop at the *lower* part's centre (mid-forearm
+/// / mid-shin). Each entry draws an extra bone starting at `to` and reaching
+/// `factor × |to − from|` further along the (from → to) direction, so the
+/// skeleton covers the whole arm down to the hand and the whole leg down to
+/// the foot.
+pub const SKELETON_TIPS_R15: [(usize, usize, f32); 4] = [
+    (3, 4, 0.85),   // left forearm → hand
+    (5, 6, 0.85),   // right forearm → hand
+    (7, 8, 0.95),   // left shin → foot
+    (9, 10, 0.95),  // right shin → foot
+];
+
 // ─── Cache entry ───────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -87,6 +100,15 @@ impl CharCache {
             0 => &SKELETON_SEGMENTS_R15,
             1 => &SKELETON_SEGMENTS_R6,
             _ => &SKELETON_SEGMENTS_HRP,
+        }
+    }
+
+    /// Extra limb-tip bones extending arms/legs to hands/feet. Only R15
+    /// needs them (R6 limbs are single parts, HRP has no limbs).
+    pub fn tips(&self) -> &'static [(usize, usize, f32)] {
+        match self.rig_type {
+            0 => &SKELETON_TIPS_R15,
+            _ => &[],
         }
     }
 }
@@ -216,23 +238,95 @@ pub fn build_char_cache(sdk: &SdkI, char_addr: u64, humanoid_addr: u64) -> Optio
     })
 }
 
-/// Walk Workspace direct children and keep the ones that have a `Humanoid`.
-/// `local_name` (the username of the local player) is filtered out — both
-/// ESP and aimbot pull from the cache this builds, so excluding self here
-/// is the single point of truth.
-pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> Vec<CharCache> {
-    let mut caches = Vec::new();
-    let workspace_children = get_children(sdk, workspace);
+/// Per-container child cap, shared by the full walk and the shallow rescan.
+const MAX_CHILDREN_PER_NODE: usize = 256;
+
+/// `(instance, humanoid_ptr)` if `instance` is a character (owns a `Humanoid`
+/// or a `HumanoidRootPart` child), else `None`. `humanoid_ptr` is 0 when only
+/// an HRP was found — `build_char_cache` then reports health as unknown.
+fn character_marker(sdk: &SdkI, instance: u64, humanoid_name: &str, hrp_name: &str) -> Option<u64> {
+    let humanoid = find_child_fast(sdk, instance, humanoid_name);
+    if sdk.is_valid_ptr(humanoid) { return Some(humanoid); }
+    if sdk.is_valid_ptr(find_child_fast(sdk, instance, hrp_name)) { return Some(0); }
+    None
+}
+
+/// Recursively walk the Workspace subtree and keep every node that owns a
+/// `Humanoid` *or* a `HumanoidRootPart` child — that node is a character and
+/// its `Name` is the owning player's name. Walking the whole tree (not just
+/// Workspace's direct children) makes discovery work in games that nest
+/// characters under folders ("Players", "Living", a map model, …) instead of
+/// parenting them straight to Workspace.
+///
+/// Returns the characters **and** the de-duplicated set of parent containers
+/// that held them, so the cache thread can remember those paths and rescan
+/// them cheaply next time instead of re-walking the whole tree.
+///
+/// Once a node is identified as a character we do *not* descend into it — its
+/// own rig parts would otherwise be mistaken for sub-characters. `local_name`
+/// (the local player's username) is filtered out here, the single point of
+/// truth for both ESP and aimbot.
+///
+/// Bounded by depth / per-node / total-node caps so a huge Workspace can't
+/// stall the cache thread.
+pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec<CharCache>, Vec<u64>) {
+    const MAX_DEPTH: u32 = 6;
+    const MAX_TOTAL_NODES: usize = 3000;
+
     let humanoid_name = obfstr!("Humanoid").to_string();
-    for c in workspace_children.into_iter().take(200) {
-        let humanoid = find_child_fast(sdk, c, &humanoid_name);
-        if !sdk.is_valid_ptr(humanoid) { continue; }
-        // Each character in Workspace is named after its owning player; the
-        // local player's character shares the LocalPlayer.Name we resolved
-        // through DataModel → Players → first child.
-        if !local_name.is_empty() && read_name_fast(sdk, c) == local_name { continue; }
-        if let Some(cache) = build_char_cache(sdk, c, humanoid) {
-            caches.push(cache);
+    let hrp_name = obfstr!("HumanoidRootPart").to_string();
+
+    let mut caches = Vec::new();
+    let mut containers: Vec<u64> = Vec::new();
+    let mut total = 0usize;
+    // Iterative DFS over `(node, depth)` to avoid deep recursion on the stack.
+    let mut stack: Vec<(u64, u32)> = vec![(workspace, 0)];
+
+    while let Some((node, depth)) = stack.pop() {
+        if total >= MAX_TOTAL_NODES { break; }
+        for c in get_children(sdk, node).into_iter().take(MAX_CHILDREN_PER_NODE) {
+            if total >= MAX_TOTAL_NODES { break; }
+            total += 1;
+
+            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name) {
+                // Remember the parent path even if the only character here is
+                // ourselves — it's still where players will appear.
+                if !containers.contains(&node) { containers.push(node); }
+                if local_name.is_empty() || read_name_fast(sdk, c) != local_name {
+                    if let Some(cache) = build_char_cache(sdk, c, humanoid) {
+                        caches.push(cache);
+                    }
+                }
+                // A character's children are its body parts — never recurse in.
+                continue;
+            }
+
+            if depth + 1 < MAX_DEPTH {
+                stack.push((c, depth + 1));
+            }
+        }
+    }
+    (caches, containers)
+}
+
+/// Cheap rescan of already-known parent containers: only their direct children
+/// are checked for the character marker — no tree walk. Stale pointers (e.g.
+/// after a new game) are skipped via `is_valid_ptr` and simply yield nothing,
+/// which signals the caller to fall back to a full `discover_characters`.
+pub fn discover_in_containers(sdk: &SdkI, containers: &[u64], local_name: &str) -> Vec<CharCache> {
+    let humanoid_name = obfstr!("Humanoid").to_string();
+    let hrp_name = obfstr!("HumanoidRootPart").to_string();
+
+    let mut caches = Vec::new();
+    for &container in containers {
+        if !sdk.is_valid_ptr(container) { continue; }
+        for c in get_children(sdk, container).into_iter().take(MAX_CHILDREN_PER_NODE) {
+            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name) {
+                if !local_name.is_empty() && read_name_fast(sdk, c) == local_name { continue; }
+                if let Some(cache) = build_char_cache(sdk, c, humanoid) {
+                    caches.push(cache);
+                }
+            }
         }
     }
     caches
@@ -266,23 +360,59 @@ pub fn resolve_local_player_name(sdk: &SdkI) -> String {
 
 // ─── Off-thread cache rebuild ─────────────────────────────────────────
 
-/// Refreshes `AppState.char_caches` every 700 ms. The ESP loop only ever
-/// clones the `Arc<Vec<CharCache>>` (atomic refcount bump) so it never
-/// pays for the Workspace walk.
+/// Refreshes `AppState.char_caches`. The ESP loop only ever clones the
+/// `Arc<Vec<CharCache>>` (atomic refcount bump) so it never pays for the walk.
+///
+/// To stay fast *and* survive a new game (which empties the list when the old
+/// containers are freed), it works in two modes:
+///   * **Remembered path** — once a full walk locates the parent container(s)
+///     that hold characters, later ticks just rescan those containers' direct
+///     children (`discover_in_containers`), skipping the whole-tree walk.
+///   * **Recovery** — if the rescan comes back empty (new game, stale paths),
+///     fall back to a full `discover_characters`, relearn the containers, and
+///     poll every 500 ms until players reappear.
+/// A periodic full walk also runs every few seconds so containers added later
+/// (e.g. a second character folder) are still picked up.
 pub fn start_char_cache_thread(app_handle: AppHandle) {
     thread::spawn(move || {
+        let mut known_containers: Vec<u64> = Vec::new();
+        let mut last_full_walk = Instant::now() - Duration::from_secs(60);
         loop {
+            let mut empty = true;
             let state = app_handle.state::<AppState>();
             let sdk_opt = state.sdk.lock().unwrap().clone();
             if let Some(sdk) = sdk_opt {
                 if let Some(workspace) = resolve_workspace(&sdk) {
                     let local_name = resolve_local_player_name(&sdk);
                     *state.local_player_name.lock().unwrap() = local_name.clone();
-                    let caches = discover_characters(&sdk, workspace, &local_name);
+
+                    // Cheap path first: rescan remembered containers.
+                    let mut caches = if known_containers.is_empty() {
+                        Vec::new()
+                    } else {
+                        discover_in_containers(&sdk, &known_containers, &local_name)
+                    };
+
+                    // Full walk when the cheap path found nothing (first run,
+                    // new game, or stale paths) or on a periodic refresh so
+                    // newly-added containers are still discovered.
+                    let refresh_due = last_full_walk.elapsed() >= Duration::from_secs(4);
+                    if caches.is_empty() || refresh_due {
+                        let (full, containers) = discover_characters(&sdk, workspace, &local_name);
+                        last_full_walk = Instant::now();
+                        if !containers.is_empty() { known_containers = containers; }
+                        // Keep whichever found more (refresh may run while the
+                        // cheap path already had results).
+                        if full.len() >= caches.len() { caches = full; }
+                    }
+
+                    empty = caches.is_empty();
                     *state.char_caches.lock().unwrap() = Arc::new(caches);
                 }
             }
-            thread::sleep(Duration::from_millis(700));
+            // Poll fast (0.5 s) while the list is empty so a fresh game recovers
+            // quickly; settle to 700 ms once players are visible.
+            thread::sleep(Duration::from_millis(if empty { 500 } else { 700 }));
         }
     });
 }

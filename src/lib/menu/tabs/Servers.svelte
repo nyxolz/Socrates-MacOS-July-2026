@@ -15,6 +15,7 @@
     let joinError = "";
     let joining = false;
     let timer = 0;
+    let ramBytes = 0;
 
     function loadCache() {
         try {
@@ -31,6 +32,8 @@
     async function refresh() {
         try { placeName = await invoke<string>("get_place_name"); }
         catch { placeName = "(not attached)"; }
+        try { ramBytes = await invoke<number>("get_self_ram_bytes"); }
+        catch { ramBytes = 0; }
 
         // If we know the last joined id and the place name updated to a real
         // value, refresh that entry's display name so the cache stays useful.
@@ -90,6 +93,12 @@
         if (e.key === "Enter") join(inputId);
     }
 
+    function fmtRam(bytes: number): string {
+        if (!bytes) return "—";
+        const mb = bytes / (1024 * 1024);
+        return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
+    }
+
     onMount(() => {
         loadCache();
         refresh();
@@ -109,6 +118,7 @@
                 <span class="lbl">Place ID</span>
                 <span class="val mono">{lastJoinedId ?? "—"}</span>
             </div>
+            <div class="ram mono">socrate ram: {fmtRam(ramBytes)}</div>
         </Section>
 
         <Section title="Join Place ID" icon="compass" active={inputId.length > 0}>
@@ -147,6 +157,7 @@
                 </div>
             {/each}
         </Section>
+
     </div>
 </div>
 
@@ -177,6 +188,13 @@
         word-break: break-all;
     }
     .mono { font-variant-numeric: tabular-nums; }
+    .ram {
+        font-size: 9px;
+        color: var(--text-muted);
+        margin-top: 4px;
+        text-align: right;
+        opacity: 0.7;
+    }
 
     .join { display: flex; gap: 6px; align-items: stretch; }
     .join input {

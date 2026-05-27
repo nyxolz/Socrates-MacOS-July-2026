@@ -5,6 +5,7 @@
 //! Behavior lives in the modules that mutate this state (overlay::tracker,
 //! commands, future esp / aimbot loops).
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -260,6 +261,12 @@ pub struct AppState {
 
     /// Char_addr of the player currently being spectated. 0 = off.
     pub spectate_target: Mutex<u64>,
+
+    /// Per-player relation, keyed by player name (stable across respawns,
+    /// unlike char_addr). `0` = enemy (default — any name absent from the map
+    /// is treated as enemy), `1` = ally, `2` = neutral. Enemies get aimbot +
+    /// full ESP; allies get only a green head dot; neutrals are ignored.
+    pub player_relations: Mutex<HashMap<String, u8>>,
 }
 
 impl Default for AppState {
@@ -275,6 +282,7 @@ impl Default for AppState {
             menu_toggle_bind: Mutex::new("Home".into()),
             local_player_name: Mutex::new(String::new()),
             spectate_target: Mutex::new(0),
+            player_relations: Mutex::new(HashMap::new()),
         }
     }
 }
