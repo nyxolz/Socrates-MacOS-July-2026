@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use core_graphics::display::CGDisplay;
-use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, EventField};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use obfstr::obfstr;
@@ -49,6 +49,30 @@ fn move_mouse_to(x: f64, y: f64) {
         ) {
             e.post(CGEventTapLocation::HID);
         }
+    }
+}
+
+/// Simulate a *relative* mouse-look movement of `(dx, dy)` — the exact input a
+/// player makes with the mouse to rotate the camera.
+///
+/// The key point: we keep the cursor where it is and carry the motion purely
+/// in the `kCGMouseEventDeltaX/Y` fields. A mouse-look game reads those raw
+/// deltas to turn the view. Moving the *absolute* position instead (as
+/// `move_mouse_to` does) would be treated as cursor positioning, which doesn't
+/// rotate the camera. We post `MouseMoved` to the HID tap so it enters the
+/// same input stream as a physical mouse.
+fn nudge_mouse(dx: f64, dy: f64) {
+    let src = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        Ok(s) => s, Err(_) => return,
+    };
+    // Event location = current cursor, unchanged. Only the deltas move.
+    let cur = CGEvent::new(src.clone())
+        .map(|e| e.location())
+        .unwrap_or(CGPoint::new(0.0, 0.0));
+    if let Ok(e) = CGEvent::new_mouse_event(src, CGEventType::MouseMoved, cur, CGMouseButton::Left) {
+        e.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx as i64);
+        e.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy as i64);
+        e.post(CGEventTapLocation::HID);
     }
 }
 
@@ -214,6 +238,10 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
         // TEMP diagnostics: track what we wrote last tick + a throttle counter.
         let mut dbg_tick: u32 = 0;
         let mut dbg_last: Option<[[f32; 3]; 3]> = None;
+        // BETA diag: cursor-vibration phase (Camera mode, locked on target).
+        // Cycles right → back → up → back to test whether the game's camera
+        // reacts to relative mouse-look deltas.
+        let mut vib_phase: u32 = 0;
 
         loop {
             thread::sleep(Duration::from_millis(1));
@@ -225,6 +253,24 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             let sdk = match state.sdk.lock().unwrap().clone() {
                 Some(s) => s, None => continue,
             };
+
+            // BETA diag: the moment Camera mode is enabled — no key held, no
+            // target needed — nudge the camera continuously with a tiny
+            // relative mouse-look delta. The pattern is symmetric (right →
+            // back → up → back) so it oscillates without ever drifting away,
+            // which keeps it unnoticeable while still proving in game that the
+            // camera reacts to injected mouse movement. One phase per tick at
+            // this loop rate, so it's effectively non-stop.
+            if cfg.enabled && cfg.aim_type == "Camera" {
+                let (vx, vy) = match vib_phase % 4 {
+                    0 => (4.0, 0.0),   // right
+                    1 => (-4.0, 0.0),  // back to centre
+                    2 => (0.0, -4.0),  // up
+                    _ => (0.0, 4.0),   // back to centre
+                };
+                vib_phase = vib_phase.wrapping_add(1);
+                nudge_mouse(vx, vy);
+            }
 
             let aim_on = cfg.enabled && is_held(&cfg.keybind);
             let trig_on = cfg.trigger_enabled && is_held(&cfg.trigger_keybind);
