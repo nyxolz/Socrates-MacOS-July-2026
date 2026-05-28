@@ -186,6 +186,13 @@ if git diff --cached --quiet; then
     say "No changes to commit."
 else
     git commit -m "Release arm+intel build for ${ROBLOX_V}"
+    say "Syncing with remote (rebase)..."
+    # Edits made directly on GitHub (e.g. luncher.sh) leave the remote ahead,
+    # which makes the first push attempt fail with "fetch first". Rebasing our
+    # release commit onto whatever landed in the meantime resolves it without
+    # a merge commit. Our changes (DMGs + status.json) don't overlap with the
+    # files typically edited on GitHub, so conflicts are unlikely.
+    git pull --rebase origin main
     say "Pushing to origin..."
     git push origin main
     green "[*] Done — both builds live:"

@@ -25,24 +25,34 @@ fn find_pid(process_name: &str) -> Option<i32> {
 
 /// Walk `vmmap -wide` looking for the `__TEXT` segment of `module_name`
 /// and return its base address.
+///
+/// On Rosetta (Intel binary on ARM macOS) Roblox typically exposes a single
+/// `__TEXT` line, so first-match is enough. On **native Intel macOS** the
+/// binary often has multiple `__TEXT` segments (hardened-runtime split),
+/// and the first one listed by `vmmap` isn't necessarily the actual load
+/// address — picking the wrong one yields a `base` that's offset by a few
+/// MB, and `read(base + entry)` lands in garbage that still passes range
+/// checks. The lowest address among the matching `__TEXT` segments is
+/// reliably the binary's true load address on both arches.
 fn find_base(pid: i32, module_name: &str) -> Option<u64> {
     let output = std::process::Command::new("vmmap")
         .arg("-wide").arg(pid.to_string())
         .output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lowest: Option<u64> = None;
     for line in stdout.lines() {
-        if line.contains(module_name) && line.contains("__TEXT") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            for part in &parts {
-                if let Some(addr_str) = part.split('-').next() {
-                    if let Ok(addr) = u64::from_str_radix(addr_str, 16) {
-                        if addr > 0 { return Some(addr); }
+        if !(line.contains(module_name) && line.contains("__TEXT")) { continue; }
+        for part in line.split_whitespace() {
+            if let Some(addr_str) = part.split('-').next() {
+                if let Ok(addr) = u64::from_str_radix(addr_str, 16) {
+                    if addr > 0 {
+                        lowest = Some(match lowest { Some(l) => l.min(addr), None => addr });
                     }
                 }
             }
         }
     }
-    None
+    lowest
 }
 
 pub struct SdkI {
@@ -121,8 +131,20 @@ impl SdkI {
     }
 
     /// Range check for "this looks like a real Roblox heap pointer".
+    ///
+    /// ARM macOS (and Intel-via-Rosetta) packs the Roblox heap inside the
+    /// `(4 GB, 32 GB)` window — the tight range catches obvious garbage.
+    /// Native Intel macOS allocates much higher, typically `0x7F…` —
+    /// canonical 48-bit user space — so we widen the ceiling for x86_64.
+    /// Tightening to require 8-byte alignment removes most low-bit noise
+    /// that the old narrow range was incidentally filtering out.
+    #[cfg(target_arch = "aarch64")]
     pub fn is_valid_ptr(&self, addr: u64) -> bool {
         addr > 0x100000000 && addr < 0x800000000
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub fn is_valid_ptr(&self, addr: u64) -> bool {
+        addr > 0x100000000 && addr < 0x0000_8000_0000_0000
     }
 
     /// Raw bulk read — used by the signature scanner.

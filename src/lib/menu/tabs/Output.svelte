@@ -12,7 +12,6 @@
         catch { ok = false; }
     }
     onMount(async () => {
-        // Build arch is fixed at compile time — fetch once.
         try { arch = await invoke<string>("get_arch"); } catch { arch = "?"; }
         refresh();
         timer = window.setInterval(refresh, 1000);

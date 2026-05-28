@@ -4,18 +4,17 @@
 //! held it walks the char_caches, picks the best target according to the
 //! selection mode (with min/max distance + FOV filters), optionally applies
 //! linear velocity prediction + bullet drop, and projects to screen. In
-//! Mouse mode it moves the OS cursor with a synthetic CGEvent (mouse-moved,
-//! posted to the HID tap) toward the projected target, lerped for smoothing.
-//! In Camera mode it writes the camera orientation matrix. Trigger bot fires
-//! `LeftMouseDown/Up` when a
-//! target sits within ~6 px of the crosshair (delay + burst respected).
+//! Mouse mode it warps the OS cursor toward the projected target, lerped for
+//! smoothing. In Camera mode it writes the camera orientation matrix only —
+//! `CameraType` is never touched, so the character controller keeps working
+//! and the player can move freely while the aimbot tracks.
 
 use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use core_graphics::display::CGDisplay;
-use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, EventField};
+use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use obfstr::obfstr;
@@ -33,12 +32,12 @@ use crate::input::is_held;
 
 /// Move the OS cursor to `(x, y)` in global screen points.
 ///
-/// `CGWarpMouseCursorPosition` is the canonical macOS API for absolute cursor
-/// placement — it actually relocates the visible cursor (a bare `MouseMoved`
-/// CGEvent often doesn't). After a warp macOS dissociates the HID mouse from
-/// the cursor for ~250 ms, so we immediately re-associate to keep movement
-/// responsive. Finally we post a `MouseMoved` event at the same point so games
-/// that read the event stream (not just the polled cursor) register the move.
+/// `warp_mouse_cursor_position` is the canonical macOS API for absolute cursor
+/// placement — it actually relocates the visible cursor. After a warp macOS
+/// dissociates the HID mouse from the cursor for ~250 ms, so we immediately
+/// re-associate to keep movement responsive. Finally we post a `MouseMoved`
+/// event at the same point so games that read the event stream (not just the
+/// polled cursor) register the move.
 fn move_mouse_to(x: f64, y: f64) {
     let pt = CGPoint::new(x, y);
     let _ = CGDisplay::warp_mouse_cursor_position(pt);
@@ -49,30 +48,6 @@ fn move_mouse_to(x: f64, y: f64) {
         ) {
             e.post(CGEventTapLocation::HID);
         }
-    }
-}
-
-/// Simulate a *relative* mouse-look movement of `(dx, dy)` — the exact input a
-/// player makes with the mouse to rotate the camera.
-///
-/// The key point: we keep the cursor where it is and carry the motion purely
-/// in the `kCGMouseEventDeltaX/Y` fields. A mouse-look game reads those raw
-/// deltas to turn the view. Moving the *absolute* position instead (as
-/// `move_mouse_to` does) would be treated as cursor positioning, which doesn't
-/// rotate the camera. We post `MouseMoved` to the HID tap so it enters the
-/// same input stream as a physical mouse.
-fn nudge_mouse(dx: f64, dy: f64) {
-    let src = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        Ok(s) => s, Err(_) => return,
-    };
-    // Event location = current cursor, unchanged. Only the deltas move.
-    let cur = CGEvent::new(src.clone())
-        .map(|e| e.location())
-        .unwrap_or(CGPoint::new(0.0, 0.0));
-    if let Ok(e) = CGEvent::new_mouse_event(src, CGEventType::MouseMoved, cur, CGMouseButton::Left) {
-        e.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx as i64);
-        e.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy as i64);
-        e.post(CGEventTapLocation::HID);
     }
 }
 
@@ -97,8 +72,10 @@ pub fn current_cursor() -> Option<CGPoint> {
 }
 
 // `resolve_camera` lives in `security` now (uses XOR'd offsets so the raw
-// literals never appear inline). Re-export for the rest of this module.
+// literals never appear inline).
 use security::resolve_camera;
+
+fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t.clamp(0.0, 1.0) }
 
 // ─── Camera-write aim (alternative to mouse-warp) ───────────────────────
 // Computes the look-at orientation matrix that points the camera at
@@ -130,9 +107,6 @@ pub fn aim_camera_pub(
     aim_camera(sdk, camera_ptr, cam_pos, target, smoothing, current);
 }
 
-/// Returns the orientation matrix it actually wrote, so the caller can compare
-/// it against the camera state next tick and detect when the game's camera
-/// module reverts our write (default camera) versus keeps it (scriptable).
 fn aim_camera(
     sdk: &SdkI,
     camera_ptr: u64,
@@ -140,16 +114,16 @@ fn aim_camera(
     target: [f32; 3],
     smoothing: f32,
     current: [[f32; 3]; 3],
-) -> [[f32; 3]; 3] {
+) {
     let forward = match norm3(sub3(target, cam_pos)) {
-        Some(v) => v, None => return current,
+        Some(v) => v, None => return,
     };
     // If forward is (near-)parallel to world up, the cross collapses. Use
     // world X as the right vector in that degenerate case.
     let world_up = [0.0_f32, 1.0, 0.0];
     let right = norm3(cross3(forward, world_up)).unwrap_or([1.0, 0.0, 0.0]);
     let up = match norm3(cross3(right, forward)) {
-        Some(v) => v, None => return current,
+        Some(v) => v, None => return,
     };
 
     // Columns: 0 = Right, 1 = Up, 2 = Back (= -Forward)
@@ -172,38 +146,10 @@ fn aim_camera(
     // Write the 9 floats at `camera + CameraOrientation`. Offset for row i,
     // col j is `i * 12 + j * 4` (matches the read layout in `esp.rs`).
     let base = camera_ptr + offsets::Camera::CameraOrientation as u64;
-
     for i in 0..3u64 {
         for j in 0..3u64 {
             sdk.write::<f32>(base + i * 12 + j * 4, new_m[i as usize][j as usize]);
         }
-    }
-
-    new_m
-}
-
-/// Force the camera into Scriptable (6) so Roblox's camera module stops
-/// driving `CameraOrientation` and our matrix write sticks. Saves the previous
-/// CameraType into `saved` (usually 5/Custom) so it can be restored later.
-/// No-op if we've already forced it (keeps the original saved value).
-fn force_scriptable(sdk: &SdkI, camera_ptr: u64, saved: &mut Option<i32>) {
-    let off = camera_ptr + offsets::Camera::CameraType as u64;
-    // Save the original value once, on the first lock tick.
-    if saved.is_none() {
-        *saved = Some(sdk.read::<i32>(off));
-    }
-    // Re-assert Scriptable *every* tick — some games' own camera scripts
-    // reset CameraType back to Custom each frame, so writing it once isn't
-    // enough; we have to keep overwriting it while we hold the lock.
-    sdk.write::<i32>(off, 4);
-}
-
-/// Restore the CameraType saved by `force_scriptable`, handing control back to
-/// the camera module (the player can look around again). No-op if we never
-/// forced it.
-fn restore_cam_type(sdk: &SdkI, camera_ptr: u64, saved: &mut Option<i32>) {
-    if let Some(prev) = saved.take() {
-        sdk.write::<i32>(camera_ptr + offsets::Camera::CameraType as u64, prev);
     }
 }
 
@@ -230,21 +176,9 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
         let mut last_shot = Instant::now() - Duration::from_secs(10);
         let mut burst_left: u32 = 0;
         let mut rng: u32 = 0x12345678;
-        // Camera mode: while we're locked onto a target we force the camera to
-        // Scriptable so its module stops reverting our orientation write.
-        // `Some(prev)` = we forced it and must restore `prev` (usually 5/Custom)
-        // when the lock ends; `None` = camera untouched.
-        let mut saved_cam_type: Option<i32> = None;
-        // TEMP diagnostics: track what we wrote last tick + a throttle counter.
-        let mut dbg_tick: u32 = 0;
-        let mut dbg_last: Option<[[f32; 3]; 3]> = None;
-        // BETA diag: cursor-vibration phase (Camera mode, locked on target).
-        // Cycles right → back → up → back to test whether the game's camera
-        // reacts to relative mouse-look deltas.
-        let mut vib_phase: u32 = 0;
 
         loop {
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_millis(0));
 
             let state = app_handle.state::<AppState>();
             let cfg = state.aimbot_cfg.lock().unwrap().clone();
@@ -253,24 +187,6 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             let sdk = match state.sdk.lock().unwrap().clone() {
                 Some(s) => s, None => continue,
             };
-
-            // BETA diag: the moment Camera mode is enabled — no key held, no
-            // target needed — nudge the camera continuously with a tiny
-            // relative mouse-look delta. The pattern is symmetric (right →
-            // back → up → back) so it oscillates without ever drifting away,
-            // which keeps it unnoticeable while still proving in game that the
-            // camera reacts to injected mouse movement. One phase per tick at
-            // this loop rate, so it's effectively non-stop.
-            if cfg.enabled && cfg.aim_type == "Camera" {
-                let (vx, vy) = match vib_phase % 4 {
-                    0 => (4.0, 0.0),   // right
-                    1 => (-4.0, 0.0),  // back to centre
-                    2 => (0.0, -4.0),  // up
-                    _ => (0.0, 4.0),   // back to centre
-                };
-                vib_phase = vib_phase.wrapping_add(1);
-                nudge_mouse(vx, vy);
-            }
 
             let aim_on = cfg.enabled && is_held(&cfg.keybind);
             let trig_on = cfg.trigger_enabled && is_held(&cfg.trigger_keybind);
@@ -396,70 +312,34 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                 }
             }
 
-            // Aim — Camera mode forces the camera to Scriptable and writes the
-            // orientation matrix straight at the target (the only thing that
-            // works in an FPS, where shots come from the camera, not the
-            // cursor). Mouse mode writes Roblox's internal cursor-position Vec3
-            // (no OS input, lands on macOS) for top-down / Mouse.Hit games.
+            // Aim — Mouse warps the OS cursor; Camera writes the orientation
+            // matrix directly so the in-game camera snaps onto the target
+            // without ever touching `CameraType` (which would lock the
+            // character controller and freeze player movement).
             if aim_on {
-                let mut locked = false;
                 if let Some((_, sx, sy, _, tp)) = best {
                     let miss = cfg.legit_enabled
                         && cfg.legit_miss > 0.0
                         && rand(&mut rng) < cfg.legit_miss;
                     if !miss {
-                        if cfg.aim_type == "Camera" {
-                            // Halt the camera module so our write sticks, then
-                            // point the camera at the target.
-                            // How far did the camera drift from what we wrote
-                            // last tick? ≈0 = our write held; large = something
-                            // overwrote the orientation between ticks.
-                            let drift = dbg_last.map(|lw| {
-                                (m[0][2] - lw[0][2]).abs()
-                                    + (m[1][2] - lw[1][2]).abs()
-                                    + (m[2][2] - lw[2][2]).abs()
-                            });
-                            let ct_off = camera + offsets::Camera::CameraType as u64;
-                            let ct_before = sdk.read::<i32>(ct_off);
-                            force_scriptable(&sdk, camera, &mut saved_cam_type);
-                            let ct_after = sdk.read::<i32>(ct_off);
-                            let written = aim_camera(&sdk, camera, cam_pos, tp, cfg.smoothing, m);
-                            dbg_last = Some(written);
-                            dbg_tick = dbg_tick.wrapping_add(1);
-                            if dbg_tick % 50 == 0 {
-                                eprintln!(
-                                    "[cam] CameraType before={ct_before} after_write={ct_after} (want 6) | orient_drift={:.4} (~0=our write held, big=overwritten)",
-                                    drift.unwrap_or(-1.0)
-                                );
+                        match cfg.aim_type.as_str() {
+                            "Camera" => {
+                                aim_camera(&sdk, camera, cam_pos, tp, cfg.smoothing, m);
                             }
-                            locked = true;
-                        } else {
-                            // Mouse mode: drive the OS cursor toward the
-                            // projected target via CGEvent. `sx/sy` are already
-                            // global screen coordinates — the same space
-                            // `current_cursor()` reports — so lerp from the
-                            // current cursor for smoothing + optional jitter.
-                            let (cx, cy) = current_cursor()
-                                .map(|c| (c.x, c.y))
-                                .unwrap_or((sx, sy));
-                            let s = (1.0 - cfg.smoothing.clamp(0.0, 0.99)).max(0.01) as f64;
-                            let (jx, jy) = if cfg.humanize {
-                                ((rand(&mut rng) - 0.5) as f64, (rand(&mut rng) - 0.5) as f64)
-                            } else { (0.0, 0.0) };
-                            let nx = cx + (sx - cx) * s + jx;
-                            let ny = cy + (sy - cy) * s + jy;
-                            move_mouse_to(nx, ny);
+                            _ => {
+                                if let Some(cur) = current_cursor() {
+                                    let smooth = (1.0 - cfg.smoothing as f64).max(0.01);
+                                    let (mut nx, mut ny) = (lerp(cur.x, sx, smooth), lerp(cur.y, sy, smooth));
+                                    if cfg.humanize {
+                                        nx += (rand(&mut rng) - 0.5) as f64;
+                                        ny += (rand(&mut rng) - 0.5) as f64;
+                                    }
+                                    move_mouse_to(nx, ny);
+                                }
+                            }
                         }
                     }
                 }
-                // No target locked this tick (none in FOV, or a legit miss) →
-                // hand the camera back so the player isn't frozen on nothing.
-                if !locked {
-                    restore_cam_type(&sdk, camera, &mut saved_cam_type);
-                }
-            } else {
-                // Aim key released — restore camera control.
-                restore_cam_type(&sdk, camera, &mut saved_cam_type);
             }
 
             // Trigger

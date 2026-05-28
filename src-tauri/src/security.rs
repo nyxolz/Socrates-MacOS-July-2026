@@ -242,13 +242,88 @@ pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
     if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
 }
 
-/// Intel build: `base + 0x61E8768` is *already* the DataModel pointer — no
-/// FakeDataModel wrapper, single read.
+// ─── Intel: entry-offset auto-discovery ─────────────────────────────
+//
+// The hardcoded `0x61E8768` was derived against the Rosetta-translated
+// image of the Intel Roblox binary. On *native* Intel macOS the same
+// `.dmg` lays its segments out differently, so the FakeDataModel slot
+// lands at a different file offset. We anchor on the unique property
+// that a real DataModel always exposes `Workspace` at `DM + 0x168`
+// (whose Parent points back to the DataModel), scan a ±48 MB window
+// around the Rosetta hint, and cache the first slot that satisfies
+// both anchors. Discovery happens at most once per process.
+
+#[cfg(target_arch = "x86_64")]
+static DISCOVERED_ENTRY: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static DISCOVERY_ATTEMPTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_arch = "x86_64")]
+fn validate_dm(sdk: &SdkI, dm: u64) -> bool {
+    if !sdk.is_valid_ptr(dm) { return false; }
+    let ws = sdk.read::<u64>(dm + 0x168);
+    if !sdk.is_valid_ptr(ws) { return false; }
+    if sdk.read::<u64>(ws + 0x70) != dm { return false; }
+    crate::sdk::name_of(sdk, ws) == "Workspace"
+}
+
+#[cfg(target_arch = "x86_64")]
+fn discover_entry_offset(sdk: &SdkI) -> Option<u64> {
+    const HINT: u64 = 0x61E8768;
+    const WIN:  u64 = 0x0300_0000;     // ±48 MB
+    const CHUNK: usize = 0x10_0000;    // 1 MB
+
+    let start = HINT.saturating_sub(WIN) & !7;
+    let end   = HINT + WIN;
+
+    let mut off = start;
+    while off < end {
+        let want = ((end - off) as usize).min(CHUNK);
+        let buf = sdk.vm_read_bulk(sdk.base + off, want);
+        let n = buf.len();
+        let mut i: usize = 0;
+        while i + 8 <= n {
+            let cand = u64::from_le_bytes([
+                buf[i],   buf[i+1], buf[i+2], buf[i+3],
+                buf[i+4], buf[i+5], buf[i+6], buf[i+7],
+            ]);
+            if validate_dm(sdk, cand) {
+                return Some(off + i as u64);
+            }
+            i += 8;
+        }
+        off += CHUNK as u64;
+    }
+    None
+}
+
+/// Intel build: `base + entry` holds the DataModel pointer directly
+/// (no FakeDataModel wrapper). Replay any cached entry offset, fall
+/// back to the Rosetta-derived hint with a strong Workspace validator,
+/// and only scan the binary if both miss.
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
-    let dm = sdk.read::<u64>(sdk.base + off_entry_fake_dm_intel());
-    if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
+    let cached = DISCOVERED_ENTRY.load(Ordering::Relaxed);
+    if cached != 0 {
+        let dm = sdk.read::<u64>(sdk.base + cached);
+        if sdk.is_valid_ptr(dm) { return Some(dm); }
+    }
+    let hard = off_entry_fake_dm_intel();
+    let dm = sdk.read::<u64>(sdk.base + hard);
+    if validate_dm(sdk, dm) {
+        DISCOVERED_ENTRY.store(hard, Ordering::Relaxed);
+        return Some(dm);
+    }
+    if !DISCOVERY_ATTEMPTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if let Some(off) = discover_entry_offset(sdk) {
+            DISCOVERED_ENTRY.store(off, Ordering::Relaxed);
+            let dm = sdk.read::<u64>(sdk.base + off);
+            if sdk.is_valid_ptr(dm) { return Some(dm); }
+        }
+    }
+    None
 }
 
 #[inline(never)]
