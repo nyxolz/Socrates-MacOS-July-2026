@@ -21,10 +21,9 @@ use std::time::Duration;
 use obfstr::obfstr;
 use tauri::{AppHandle, Manager};
 
-use crate::offsets;
 use crate::players::find_child_fast;
 use crate::sdk::SdkI;
-use crate::security::resolve_camera;
+use crate::security::{self, resolve_camera};
 use crate::state::AppState;
 
 /// 0 sentinel = not discovered yet. Real offsets are small (< 0x400).
@@ -35,12 +34,9 @@ static CAMERA_SUBJECT_OFFSET: AtomicU64 = AtomicU64::new(0);
 /// progress, etc.). Cheap enough to call from the spectate tick.
 fn resolve_local_humanoid(sdk: &SdkI, local_name: &str) -> u64 {
     if local_name.is_empty() { return 0; }
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return 0; }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return 0; }
-    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
-    if !sdk.is_valid_ptr(ws) { return 0; }
+    let ws = match security::resolve_workspace(sdk) {
+        Some(v) => v, None => return 0,
+    };
     let char_addr = find_child_fast(sdk, ws, local_name);
     if !sdk.is_valid_ptr(char_addr) { return 0; }
     let humanoid = find_child_fast(sdk, char_addr, obfstr!("Humanoid").as_ref());

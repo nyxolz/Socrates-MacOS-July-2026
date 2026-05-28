@@ -8,7 +8,8 @@ pub const ROBLOX_VERSION: &str = "version-73d88b9483b340ae";
 // ─── Entry — static offsets relative to the Roblox base image ─────────────
 pub enum Entry {
     /// `Roblox.base + FakeDataModel` → pointer to the FakeDataModel struct.
-    FakeDataModel = 0x6024748,
+    FakeDataModelARM = 0x6024748,
+    FakeDataModelINTEL = 0x61E8768,
 }
 
 // ─── Instance (shared layout for every Roblox Instance) ──────────────────
@@ -20,7 +21,7 @@ pub enum Instance {
 
 // ─── FakeDataModel → DataModel ───────────────────────────────────────────
 pub enum FakeDataModel {
-    DataModel = 0x18,
+    DataModelARM = 0x18,
 }
 
 // ─── DataModel — services ────────────────────────────────────────────────

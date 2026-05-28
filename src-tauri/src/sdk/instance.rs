@@ -12,18 +12,58 @@ pub enum Instance {
     Name = 0x0B0,
 }
 
-/// Read a printable ASCII string at `instance + offset` (the offset points
-/// to a `char*`, not the inline bytes).
+/// Read up to `max` printable ASCII bytes from `addr`, stopping at NUL or
+/// the first non-printable byte. Shared by both arch implementations of
+/// `read_string` below.
+fn read_cstr(sdk: &SdkI, addr: u64, max: u64) -> String {
+    let mut out = String::with_capacity(max.min(64) as usize);
+    for i in 0..max {
+        let b = sdk.read::<u8>(addr + i);
+        if b == 0 || !(32..=126).contains(&b) { break; }
+        out.push(b as char);
+    }
+    out
+}
+
+/// ARM Roblox: the string field stores a raw `char*` at offset 0. One read
+/// gives the heap pointer, then we walk it as a C-string.
+#[cfg(target_arch = "aarch64")]
 pub fn read_string(sdk: &SdkI, instance: u64, offset: u64) -> String {
     let data_ptr = sdk.read::<u64>(instance + offset);
     if !sdk.is_valid_ptr(data_ptr) { return String::new(); }
-    let mut bytes = [0u8; 128];
-    for i in 0..128u64 {
-        bytes[i as usize] = sdk.read::<u8>(data_ptr + i);
-        if bytes[i as usize] == 0 { break; }
+    read_cstr(sdk, data_ptr, 128)
+}
+
+/// Intel Roblox: the field holds a **pointer** to a libc++ `std::string`
+/// object (NOT the string inline). Two reads are needed:
+///   1. `strobj = read u64 at instance+offset` — the std::string's address.
+///   2. Decode the 24-byte std::string at `strobj`. The low bit of byte 0
+///      picks the layout:
+///        • `byte0 & 1 == 0` → **SSO**: `size = byte0 >> 1`, characters
+///          live inline starting at `strobj + 1` (up to 22 bytes).
+///        • `byte0 & 1 == 1` → **long form**: `size = u64 at strobj+8`,
+///          heap `char*` = `u64 at strobj+16`.
+///
+/// Decoding the std::string at `instance+offset` directly (skipping step 1)
+/// is the trap that produced empty names — that address holds the *pointer*
+/// to the string struct, not the struct itself.
+#[cfg(target_arch = "x86_64")]
+pub fn read_string(sdk: &SdkI, instance: u64, offset: u64) -> String {
+    let strobj = sdk.read::<u64>(instance + offset);
+    if !sdk.is_valid_ptr(strobj) { return String::new(); }
+
+    let byte0 = sdk.read::<u8>(strobj);
+    if byte0 & 1 == 0 {
+        let size = (byte0 >> 1) as u64;
+        if size == 0 || size > 22 { return String::new(); }
+        read_cstr(sdk, strobj + 1, size)
+    } else {
+        let size = sdk.read::<u64>(strobj + 8);
+        if size == 0 || size > 4096 { return String::new(); }
+        let data_ptr = sdk.read::<u64>(strobj + 16);
+        if !sdk.is_valid_ptr(data_ptr) { return String::new(); }
+        read_cstr(sdk, data_ptr, size.min(256))
     }
-    bytes.iter().take_while(|&&b| b != 0 && b >= 32 && b <= 126)
-        .map(|&b| b as char).collect()
 }
 
 pub fn name_of(sdk: &SdkI, instance: u64) -> String {

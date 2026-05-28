@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::offsets;
 use crate::sdk::{get_children, Instance, SdkI};
+use crate::security;
 use crate::state::AppState;
 
 // ─── Rig tables ────────────────────────────────────────────────────────
@@ -115,9 +116,39 @@ impl CharCache {
 }
 
 // ─── Fast readers ──────────────────────────────────────────────────────
+//
+// `find_child_fast` and `read_name_fast` are on the per-tick discovery hot
+// path, so they bypass `sdk::read_string` and inline the byte-level reads.
+// The ABI of the Name field differs per arch, so we keep two impls:
+//   • ARM   : Name is a raw `char*` — one deref to the chars.
+//   • Intel : Name is a pointer to a 24-byte libc++ `std::string` —
+//             SSO when `byte0 & 1 == 0` (chars at strobj+1), else long-form
+//             (size at strobj+8, char* at strobj+16). Same logic as
+//             `sdk::instance::read_string`, just inlined to avoid the call.
+
+/// Intel-only helper: given the *strobj pointer the Name field holds, return
+/// the address of the first character and the string length, or None if the
+/// std::string header doesn't look clean.
+#[cfg(target_arch = "x86_64")]
+fn intel_name_locate(sdk: &SdkI, strobj: u64) -> Option<(u64, u64)> {
+    if !sdk.is_valid_ptr(strobj) { return None; }
+    let byte0 = sdk.read::<u8>(strobj);
+    if byte0 & 1 == 0 {
+        let size = (byte0 >> 1) as u64;
+        if size == 0 || size > 22 { return None; }
+        Some((strobj + 1, size))
+    } else {
+        let size = sdk.read::<u64>(strobj + 8);
+        if size == 0 || size > 4096 { return None; }
+        let data_ptr = sdk.read::<u64>(strobj + 16);
+        if !sdk.is_valid_ptr(data_ptr) { return None; }
+        Some((data_ptr, size.min(256)))
+    }
+}
 
 /// Like `find_first_child` but compares names byte-by-byte without ever
 /// allocating a `String` — significantly cheaper inside the cache rebuild.
+#[cfg(target_arch = "aarch64")]
 pub fn find_child_fast(sdk: &SdkI, instance: u64, target: &str) -> u64 {
     let container = sdk.read::<u64>(instance + Instance::ChildrenList as u64);
     if !sdk.is_valid_ptr(container) { return 0; }
@@ -145,6 +176,38 @@ pub fn find_child_fast(sdk: &SdkI, instance: u64, target: &str) -> u64 {
     0
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn find_child_fast(sdk: &SdkI, instance: u64, target: &str) -> u64 {
+    let container = sdk.read::<u64>(instance + Instance::ChildrenList as u64);
+    if !sdk.is_valid_ptr(container) { return 0; }
+    let array_begin = sdk.read::<u64>(container);
+    let array_end   = sdk.read::<u64>(container + 8);
+    if !sdk.is_valid_ptr(array_begin) || array_end <= array_begin { return 0; }
+    let count = ((array_end - array_begin) / 8).min(2000);
+    let target_bytes = target.as_bytes();
+    let target_len = target_bytes.len();
+    if target_len > 32 { return 0; }
+    for i in 0..count {
+        let child = sdk.read::<u64>(array_begin + i * 8);
+        if !sdk.is_valid_ptr(child) { continue; }
+        if sdk.read::<u64>(child + Instance::Parent as u64) != instance { continue; }
+        let strobj = sdk.read::<u64>(child + Instance::Name as u64);
+        let (data_addr, len) = match intel_name_locate(sdk, strobj) {
+            Some(v) => v, None => continue,
+        };
+        if len as usize != target_len { continue; }
+        let mut buf = [0u8; 32];
+        for j in 0..target_len {
+            buf[j] = sdk.read::<u8>(data_addr + j as u64);
+        }
+        if &buf[..target_len] == target_bytes {
+            return child;
+        }
+    }
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
 pub fn read_name_fast(sdk: &SdkI, instance: u64) -> String {
     let name_ptr = sdk.read::<u64>(instance + Instance::Name as u64);
     if !sdk.is_valid_ptr(name_ptr) { return String::new(); }
@@ -155,6 +218,21 @@ pub fn read_name_fast(sdk: &SdkI, instance: u64) -> String {
     }
     bytes.iter().take_while(|&&b| b != 0 && b >= 32 && b <= 126)
         .map(|&b| b as char).collect()
+}
+
+#[cfg(target_arch = "x86_64")]
+pub fn read_name_fast(sdk: &SdkI, instance: u64) -> String {
+    let strobj = sdk.read::<u64>(instance + Instance::Name as u64);
+    let (data_addr, len) = match intel_name_locate(sdk, strobj) {
+        Some(v) => v, None => return String::new(),
+    };
+    let mut s = String::with_capacity(len.min(64) as usize);
+    for i in 0..len {
+        let b = sdk.read::<u8>(data_addr + i);
+        if b == 0 || !(32..=126).contains(&b) { break; }
+        s.push(b as char);
+    }
+    s
 }
 
 /// Read a `Vec3 f32` at `primitive_ptr + Primitive::Position` (current
@@ -377,10 +455,9 @@ pub fn discover_in_containers(sdk: &SdkI, containers: &[u64], local_name: &str) 
 /// local player is inserted first on join). Its `Name` is the local user's
 /// username, which we then strip from the char cache.
 pub fn resolve_local_player_name(sdk: &SdkI) -> String {
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return String::new(); }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return String::new(); }
+    let dm = match security::resolve_data_model(sdk) {
+        Some(v) => v, None => return String::new(),
+    };
     let players = find_child_fast(sdk, dm, obfstr!("Players").as_ref());
     if !sdk.is_valid_ptr(players) { return String::new(); }
     let container = sdk.read::<u64>(players + Instance::ChildrenList as u64);

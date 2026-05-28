@@ -4,13 +4,19 @@
     import Section from "../controls/Section.svelte";
 
     let ok = false;
+    let arch = "";
     let timer = 0;
 
     async function refresh() {
         try { ok = await invoke<boolean>("diag_check"); }
         catch { ok = false; }
     }
-    onMount(() => { refresh(); timer = window.setInterval(refresh, 1000); });
+    onMount(async () => {
+        // Build arch is fixed at compile time — fetch once.
+        try { arch = await invoke<string>("get_arch"); } catch { arch = "?"; }
+        refresh();
+        timer = window.setInterval(refresh, 1000);
+    });
     onDestroy(() => clearInterval(timer));
 </script>
 
@@ -20,6 +26,7 @@
             <div class="line" class:ok class:fail={!ok}>
                 {ok ? "✓ Offsets updated" : "✗ Workspace not found"}
             </div>
+            <div class="sub">build: <span class="arch">{arch || "…"}</span></div>
         </Section>
     </div>
     <div class="col"></div>
@@ -41,4 +48,14 @@
     }
     .ok { color: #6fdb8c; }
     .fail { color: #ff6e6e; }
+    .sub {
+        margin-top: 4px;
+        font-size: 10px;
+        color: var(--text-muted);
+        font-family: ui-monospace, Menlo, monospace;
+    }
+    .arch {
+        color: var(--text);
+        font-weight: 600;
+    }
 </style>

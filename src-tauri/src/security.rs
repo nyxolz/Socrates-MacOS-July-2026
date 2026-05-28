@@ -187,19 +187,41 @@ const fn compute_key() -> u64 {
     k
 }
 
-const ENC_ENTRY_FAKE_DM: u64 = 0x6024748u64 ^ KEY_USED_AT_COMPILE; //Fakedatamodel change at update
-const ENC_FDM_DATAMODEL: u64 = 0x18u64       ^ KEY_USED_AT_COMPILE;
-const ENC_DM_WORKSPACE:  u64 = 0x168u64      ^ KEY_USED_AT_COMPILE;
-const ENC_WS_CAMERA:     u64 = 0x460u64      ^ KEY_USED_AT_COMPILE;
+// ARM and Intel Roblox builds expose two different `base + entry` offsets,
+// AND two different chains to reach the DataModel:
+//   • ARM  : `read(base + 0x61E8760)` → FakeDataModel*, then `read(+0x18)` → DataModel.
+//   • Intel: `read(base + 0x61E8768)` is already the DataModel — no second deref.
+// All offsets are XOR-obfuscated; the active pair is selected at compile time
+// via `#[cfg(target_arch = …)]` below.
+#[allow(dead_code)]
+const ENC_ENTRY_FAKE_DMARM:   u64 = 0x6024748u64 ^ KEY_USED_AT_COMPILE;
+#[allow(dead_code)]
+const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x61E8768u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
+#[allow(dead_code)]
+const ENC_FDM_DATAMODELARM:   u64 = 0x18u64      ^ KEY_USED_AT_COMPILE;
+const ENC_DM_WORKSPACE:       u64 = 0x168u64     ^ KEY_USED_AT_COMPILE;
+const ENC_WS_CAMERA:          u64 = 0x460u64     ^ KEY_USED_AT_COMPILE;
 
+#[cfg(target_arch = "aarch64")]
 #[inline(never)]
-pub fn off_entry_fake_dm() -> u64 { ENC_ENTRY_FAKE_DM ^ *RT_KEY }
+fn off_entry_fake_dm_arm()   -> u64 { ENC_ENTRY_FAKE_DMARM   ^ *RT_KEY }
+#[cfg(target_arch = "x86_64")]
 #[inline(never)]
-pub fn off_fdm_datamodel() -> u64 { ENC_FDM_DATAMODEL ^ *RT_KEY }
+fn off_entry_fake_dm_intel() -> u64 { ENC_ENTRY_FAKE_DMINTEL ^ *RT_KEY }
+#[cfg(target_arch = "aarch64")]
 #[inline(never)]
-pub fn off_dm_workspace()  -> u64 { ENC_DM_WORKSPACE  ^ *RT_KEY }
+fn off_fdm_datamodel_arm()   -> u64 { ENC_FDM_DATAMODELARM   ^ *RT_KEY }
 #[inline(never)]
-pub fn off_ws_camera()     -> u64 { ENC_WS_CAMERA     ^ *RT_KEY }
+pub fn off_dm_workspace()    -> u64 { ENC_DM_WORKSPACE       ^ *RT_KEY }
+#[inline(never)]
+pub fn off_ws_camera()       -> u64 { ENC_WS_CAMERA          ^ *RT_KEY }
+
+/// Display string for the active build target (consumed by the menu).
+pub const fn arch_name() -> &'static str {
+    if cfg!(target_arch = "aarch64") { "ARM" }
+    else if cfg!(target_arch = "x86_64") { "Intel" }
+    else { "Unknown" }
+}
 
 // ─── Public chain resolvers using obfuscated offsets ────────────────
 //
@@ -209,16 +231,23 @@ pub fn off_ws_camera()     -> u64 { ENC_WS_CAMERA     ^ *RT_KEY }
 
 use crate::sdk::SdkI;
 
-#[inline(never)]
-pub fn resolve_fake_dm(sdk: &SdkI) -> Option<u64> {
-    let p = sdk.read::<u64>(sdk.base + off_entry_fake_dm());
-    if sdk.is_valid_ptr(p) { Some(p) } else { None }
-}
-
+/// ARM build: `base + 0x61E8760` points at a FakeDataModel struct whose
+/// `DataModel` field is at +0x18 — two reads to reach the DataModel.
+#[cfg(target_arch = "aarch64")]
 #[inline(never)]
 pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
-    let fdm = resolve_fake_dm(sdk)?;
-    let dm = sdk.read::<u64>(fdm + off_fdm_datamodel());
+    let fdm = sdk.read::<u64>(sdk.base + off_entry_fake_dm_arm());
+    if !sdk.is_valid_ptr(fdm) { return None; }
+    let dm = sdk.read::<u64>(fdm + off_fdm_datamodel_arm());
+    if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
+}
+
+/// Intel build: `base + 0x61E8768` is *already* the DataModel pointer — no
+/// FakeDataModel wrapper, single read.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
+    let dm = sdk.read::<u64>(sdk.base + off_entry_fake_dm_intel());
     if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
 }
 

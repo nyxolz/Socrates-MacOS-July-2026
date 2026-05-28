@@ -15,6 +15,7 @@ use crate::offsets;
 use crate::overlay::InteractiveRect;
 use crate::players::{find_child_fast, read_name_fast};
 use crate::sdk::{self, Instance, SdkI};
+use crate::security;
 use crate::state::{AimbotCfg, AppState, RobloxBounds, VisualsCfg, ZoneInput};
 
 #[tauri::command]
@@ -118,6 +119,12 @@ pub fn set_menu_toggle_bind(state: State<AppState>, bind: String) {
     *state.menu_toggle_bind.lock().unwrap() = bind;
 }
 
+/// Detected build architecture ("ARM" / "Intel"). The DataModel resolution
+/// chain (1 vs 2 dereferences) is selected at compile time from this — the
+/// menu surfaces it so the user can confirm the right binary is running.
+#[tauri::command]
+pub fn get_arch() -> &'static str { security::arch_name() }
+
 // ─── Offset health check for the Output tab ─────────────────────────────
 
 /// Returns `true` iff we can chain `Roblox.base → FakeDataModel → DataModel
@@ -126,10 +133,7 @@ pub fn set_menu_toggle_bind(state: State<AppState>, bind: String) {
 #[tauri::command]
 pub fn diag_check(state: State<AppState>) -> bool {
     let sdk = match state.sdk.lock().unwrap().clone() { Some(s) => s, None => return false };
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return false; }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return false; }
+    let dm = match security::resolve_data_model(&sdk) { Some(v) => v, None => return false };
     let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
     if !sdk.is_valid_ptr(ws) { return false; }
     sdk::name_of(&sdk, ws) == obfstr!("Workspace")
@@ -187,14 +191,7 @@ pub fn list_players(state: State<AppState>) -> Vec<PlayerEntry> {
 }
 
 fn resolve_cam_pos(sdk: &SdkI) -> Option<[f32; 3]> {
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return None; }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return None; }
-    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
-    if !sdk.is_valid_ptr(ws) { return None; }
-    let cam = sdk.read::<u64>(ws + offsets::Workspace::Camera as u64);
-    if !sdk.is_valid_ptr(cam) { return None; }
+    let cam = security::resolve_camera(sdk)?;
     let off = offsets::Camera::CameraPosition as u64;
     Some([
         sdk.read::<f32>(cam + off),
@@ -240,10 +237,9 @@ pub fn set_player_relation(state: State<AppState>, name: String, relation: u8) {
 pub fn get_place_name(state: State<AppState>) -> String {
     let sdk = state.sdk.lock().unwrap().clone();
     let sdk = match sdk { Some(s) => s, None => return "(not attached)".into() };
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return "(no fake datamodel)".into(); }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return "(no datamodel)".into(); }
+    let dm = match security::resolve_data_model(&sdk) {
+        Some(v) => v, None => return "(no datamodel)".into(),
+    };
     let name = sdk::name_of(&sdk, dm);
     if name.is_empty() { "(no place)".into() } else { name }
 }
@@ -284,10 +280,7 @@ pub struct InstanceNode {
 #[tauri::command]
 pub fn get_instance_tree(state: State<AppState>, reveal: Option<String>) -> Result<InstanceNode, String> {
     let sdk = state.sdk.lock().unwrap().clone().ok_or_else(|| "not attached".to_string())?;
-    let fdm = sdk.read::<u64>(sdk.base + offsets::Entry::FakeDataModel as u64);
-    if !sdk.is_valid_ptr(fdm) { return Err("no fake datamodel".into()); }
-    let dm = sdk.read::<u64>(fdm + offsets::FakeDataModel::DataModel as u64);
-    if !sdk.is_valid_ptr(dm) { return Err("no datamodel".into()); }
+    let dm = security::resolve_data_model(&sdk).ok_or_else(|| "no datamodel".to_string())?;
 
     const MAX_DEPTH: u32 = 5;
     const MAX_CHILDREN_PER_NODE: usize = 200;

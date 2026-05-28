@@ -4,9 +4,10 @@
 # Usage:
 #   ./builder_sender.sh
 #
-# Prompts for `Updated_for_roblox_v` and the target arch (arm / intel),
-# runs `tauri build`, drops the resulting .dmg into the SocrateWebsite
-# repo, updates status.json in place, commits and pushes.
+# Prompts for `Updated_for_roblox_v`, builds the app for BOTH ARM and Intel,
+# copies the ARM .dmg to the SocrateWebsite root and the Intel .dmg into
+# `SocrateWebsite/intel/`, updates status.json with both download URLs, then
+# commits and pushes in a single commit.
 
 set -euo pipefail
 
@@ -22,77 +23,138 @@ red()  { printf "\033[31m%s\033[0m\n" "$*" >&2; }
 die() { red "[X] $1"; exit 1; }
 say() { cyan "[*] $1"; }
 
-[ -d "${WEBSITE_DIR}" ]      || die "SocrateWebsite not found at ${WEBSITE_DIR}"
-[ -d "${SOCRATE_DIR}/src-tauri" ] || die "Run this from the Socrate project root."
-command -v jq >/dev/null 2>&1     || die "jq is required (brew install jq)."
+[ -d "${WEBSITE_DIR}" ]            || die "SocrateWebsite not found at ${WEBSITE_DIR}"
+[ -d "${SOCRATE_DIR}/src-tauri" ]  || die "Run this from the Socrate project root."
+command -v jq >/dev/null 2>&1       || die "jq is required (brew install jq)."
 
 # ─── Prompts ────────────────────────────────────────────────────────
 read -r -p "Updated_for_roblox_v: " ROBLOX_V
 [ -z "${ROBLOX_V}" ] && die "version required"
-
-echo ""
-echo "arch:"
-echo "  1) arm (Apple Silicon)"
-echo "  2) intel (x86_64)"
-read -r -p "choice (1/2): " ARCH_CHOICE
-
-case "${ARCH_CHOICE}" in
-    1) TARGET="aarch64-apple-darwin"; ARCH_LABEL="arm"   ;;
-    2) TARGET="x86_64-apple-darwin";  ARCH_LABEL="intel" ;;
-    *) die "invalid choice" ;;
-esac
 
 read -r -p "scorate (ex: Up): " SCORATE_STATUS
 [ -z "${SCORATE_STATUS}" ] && die "scorate status required"
 
 read -r -p "Whats_New: " WHATS_NEW
 
-if ! rustup target list --installed 2>/dev/null | grep -q "^${TARGET}$"; then
-    say "Installing rustup target ${TARGET}..."
-    rustup target add "${TARGET}"
-fi
+# Build matrix — order matters only for display.
+TARGETS=( "aarch64-apple-darwin" "x86_64-apple-darwin" )
+LABELS=(  "arm"                  "intel"               )
+
+# Install missing rustup targets up front so a build doesn't stall halfway
+# through asking for one.
+for t in "${TARGETS[@]}"; do
+    if ! rustup target list --installed 2>/dev/null | grep -q "^${t}$"; then
+        say "Installing rustup target ${t}..."
+        rustup target add "${t}"
+    fi
+done
 
 generate_hash() {
   LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 10
   echo
 }
 
-# Generate the build-stamp BEFORE compiling so it ends up baked into the
-# binary. The Settings tab compares this constant against status.json to
-# decide if an update banner should show.
+# Stamp the version BEFORE compiling so it ends up baked into both binaries.
+# Same hash for both archs — they represent the same release.
 SOCRATE_VERSION="$(generate_hash)"
 VERSION_RS="${SOCRATE_DIR}/src-tauri/src/version.rs"
 [ -f "${VERSION_RS}" ] || die "src-tauri/src/version.rs missing"
-# Format of the matched line is load-bearing (see version.rs comment).
 sed -i.bak -E "s|^pub const VERSION: &str = .*$|pub const VERSION: \&str = \"${SOCRATE_VERSION}\";|" "${VERSION_RS}"
 rm -f "${VERSION_RS}.bak"
 say "Baked VERSION=${SOCRATE_VERSION} into version.rs"
 
-# ─── Build ──────────────────────────────────────────────────────────
+# ─── Live progress wrapper ──────────────────────────────────────────
+# Runs `tauri build` in the background, redirects its (very noisy) output
+# to a log, and prints a single self-rewriting status line: spinner +
+# elapsed time + crates compiled so far + name of the current crate.
+# On success: replaces the line with a one-line summary.
+# On failure: prints the tail of the log and exits non-zero.
+build_with_progress() {
+    local target="$1"
+    local label="$2"
+    local log
+    log="$(mktemp -t "socrate-build-${label}.XXXXXX")"
+
+    # Pre-clean SvelteKit output between builds — its `rimraf` races with
+    # macOS Finder/Spotlight on .svelte-kit/output and throws ENOTEMPTY.
+    rm -rf .svelte-kit/output build
+
+    npm run tauri build -- --target "${target}" >"${log}" 2>&1 &
+    local pid=$!
+
+    local frames=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
+    local i=0
+    local start
+    start=$(date +%s)
+
+    # Re-print every ~120ms so the spinner looks smooth without hammering grep.
+    while kill -0 "$pid" 2>/dev/null; do
+        local elapsed=$(( $(date +%s) - start ))
+        local compiled
+        compiled=$(grep -c "^[[:space:]]*Compiling " "${log}" 2>/dev/null || true)
+        compiled=${compiled:-0}
+        local last
+        last=$(grep "^[[:space:]]*Compiling " "${log}" | tail -1 \
+               | sed -E 's/^[[:space:]]*Compiling[[:space:]]+([^[:space:]]+).*/\1/' \
+               || true)
+        printf "\r\033[K  %s build %-5s  %3ds  [%3d crates]  %s" \
+               "${frames[$((i % 10))]}" "${label}" "${elapsed}" "${compiled}" "${last:-…}"
+        i=$((i + 1))
+        sleep 0.12
+    done
+
+    # Reap and check status without tripping `set -e` ourselves.
+    set +e
+    wait "$pid"
+    local rc=$?
+    set -e
+
+    local elapsed=$(( $(date +%s) - start ))
+    if [ "$rc" -eq 0 ]; then
+        printf "\r\033[K  \033[32m✓\033[0m %-5s built in %ds\n" "${label}" "${elapsed}"
+        rm -f "${log}"
+    else
+        printf "\r\033[K  \033[31m✗\033[0m %-5s build failed (rc=%d) — last 40 lines:\n" "${label}" "${rc}"
+        tail -40 "${log}" >&2
+        rm -f "${log}"
+        exit "$rc"
+    fi
+}
+
 cd "${SOCRATE_DIR}"
-# SvelteKit's `rimraf` on .svelte-kit/output races with macOS Finder /
-# Spotlight and throws ENOTEMPTY ~1 build in 5. Pre-clean it ourselves so
-# vite never has to rmSync the tree it doesn't own.
-rm -rf .svelte-kit/output build
-say "Building for ${TARGET}..."
-npm run tauri build -- --target "${TARGET}"
 
-DMG_DIR="src-tauri/target/${TARGET}/release/bundle/dmg"
-DMG_SRC="$(ls -1t "${DMG_DIR}"/*.dmg 2>/dev/null | head -1 || true)"
-[ -n "${DMG_SRC}" ] && [ -f "${DMG_SRC}" ] \
-    || die "DMG not found in ${DMG_DIR}"
-say "DMG produced: ${DMG_SRC}"
+# ─── Build both archs ───────────────────────────────────────────────
+say "Building ARM + Intel..."
+for idx in 0 1; do
+    build_with_progress "${TARGETS[$idx]}" "${LABELS[$idx]}"
+done
 
-DMG_NAME="socrate-${ARCH_LABEL}.dmg"
-cp "${DMG_SRC}" "${WEBSITE_DIR}/${DMG_NAME}"
-say "Copied to ${WEBSITE_DIR}/${DMG_NAME}"
+# ─── Locate, copy, build URLs ───────────────────────────────────────
+# ARM lives at the SocrateWebsite root; Intel goes under intel/ as requested.
+ARM_DMG_SRC="$(ls -1t "src-tauri/target/${TARGETS[0]}/release/bundle/dmg"/*.dmg 2>/dev/null | head -1 || true)"
+INTEL_DMG_SRC="$(ls -1t "src-tauri/target/${TARGETS[1]}/release/bundle/dmg"/*.dmg 2>/dev/null | head -1 || true)"
+[ -n "${ARM_DMG_SRC}"   ] && [ -f "${ARM_DMG_SRC}"   ] || die "ARM dmg not produced"
+[ -n "${INTEL_DMG_SRC}" ] && [ -f "${INTEL_DMG_SRC}" ] || die "Intel dmg not produced"
+
+ARM_DMG_NAME="socrate-arm.dmg"
+INTEL_DMG_NAME="socrate-intel.dmg"
+INTEL_SUBDIR="intel"
+
+mkdir -p "${WEBSITE_DIR}/${INTEL_SUBDIR}"
+cp "${ARM_DMG_SRC}"   "${WEBSITE_DIR}/${ARM_DMG_NAME}"
+cp "${INTEL_DMG_SRC}" "${WEBSITE_DIR}/${INTEL_SUBDIR}/${INTEL_DMG_NAME}"
+say "Copied DMGs:"
+say "  ARM   → ${WEBSITE_DIR}/${ARM_DMG_NAME}"
+say "  Intel → ${WEBSITE_DIR}/${INTEL_SUBDIR}/${INTEL_DMG_NAME}"
+
+ARM_DMG_URL="${REMOTE_RAW_BASE}/${ARM_DMG_NAME}"
+INTEL_DMG_URL="${REMOTE_RAW_BASE}/${INTEL_SUBDIR}/${INTEL_DMG_NAME}"
 
 # ─── status.json ────────────────────────────────────────────────────
-# Keep the schema the launcher already reads:
-#   { "Socrate": { "Updated_for_roblox_v": "...", "arm": "...", "intel": "..." } }
+# Schema the launcher already reads:
+#   { "Socrate": { "Updated_for_roblox_v", "arm", "intel", "scorate",
+#                  "socrate_version", "Whats_New" } }
 STATUS_JSON="${WEBSITE_DIR}/status.json"
-DMG_URL="${REMOTE_RAW_BASE}/${DMG_NAME}"
-
 if [ ! -f "${STATUS_JSON}" ]; then
     cat > "${STATUS_JSON}" <<'EOF'
 { "Socrate": { "Updated_for_roblox_v": "Not Available", "arm": "Not Available", "intel": "Not Available", "scorate": "Not Available", "socrate_version": "Not Available", "Whats_New": "" } }
@@ -100,14 +162,15 @@ EOF
 fi
 
 TMP="$(mktemp)"
-jq --arg v  "${ROBLOX_V}" \
-   --arg a  "${ARCH_LABEL}" \
-   --arg u  "${DMG_URL}" \
-   --arg s  "${SCORATE_STATUS}" \
-   --arg sv "${SOCRATE_VERSION}" \
-   --arg wn "${WHATS_NEW}" \
+jq --arg v   "${ROBLOX_V}" \
+   --arg ua  "${ARM_DMG_URL}" \
+   --arg ui  "${INTEL_DMG_URL}" \
+   --arg s   "${SCORATE_STATUS}" \
+   --arg sv  "${SOCRATE_VERSION}" \
+   --arg wn  "${WHATS_NEW}" \
    '.Socrate.Updated_for_roblox_v = $v
-    | .Socrate[$a] = $u
+    | .Socrate.arm   = $ua
+    | .Socrate.intel = $ui
     | .Socrate.scorate = $s
     | .Socrate.socrate_version = $sv
     | .Socrate.Whats_New = $wn' \
@@ -117,13 +180,15 @@ jq . "${STATUS_JSON}"
 
 # ─── git commit + push ──────────────────────────────────────────────
 cd "${WEBSITE_DIR}"
-git add "${DMG_NAME}" status.json
+git add "${ARM_DMG_NAME}" "${INTEL_SUBDIR}/${INTEL_DMG_NAME}" status.json
 
 if git diff --cached --quiet; then
     say "No changes to commit."
 else
-    git commit -m "Release ${ARCH_LABEL} build for ${ROBLOX_V}"
+    git commit -m "Release arm+intel build for ${ROBLOX_V}"
     say "Pushing to origin..."
     git push origin main
-    green "[*] Done — ${DMG_NAME} live at ${DMG_URL}"
+    green "[*] Done — both builds live:"
+    green "    ARM   → ${ARM_DMG_URL}"
+    green "    Intel → ${INTEL_DMG_URL}"
 fi
