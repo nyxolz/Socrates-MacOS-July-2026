@@ -93,8 +93,8 @@
     }
     .bind {
         background: var(--bg-input);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-small);
+        border: 3px solid var(--border);
+        border-radius: 10px;
         color: var(--text);
         font: inherit;
         font-size: 11px;

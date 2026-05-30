@@ -11,6 +11,7 @@
     import Options from "./tabs/Options.svelte";
     import PlayerList from "./tabs/PlayerList.svelte";
     import Explorer from "./tabs/Explorer.svelte";
+    import Configs from "./tabs/Configs.svelte";
     import Servers from "./tabs/Servers.svelte";
     import Settings from "./tabs/Settings.svelte";
     import Icon from "./controls/Icon.svelte";
@@ -203,6 +204,8 @@
                 <PlayerList />
             {:else if $activeTab === "Explorer"}
                 <Explorer />
+            {:else if $activeTab === "Configs"}
+                <Configs />
             {:else if $activeTab === "Servers"}
                 <Servers />
             {:else if $activeTab === "Settings"}

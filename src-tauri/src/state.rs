@@ -55,6 +55,7 @@ pub struct AimbotCfg {
     pub legit_miss: f32,
     pub humanize: bool,
     pub smooth_path: bool,
+
 }
 
 impl Default for AimbotCfg {

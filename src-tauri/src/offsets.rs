@@ -59,6 +59,9 @@ pub enum Camera {
     /// previous value is restored when the aim key is released.
     CameraType = 0x150,
 }
+pub enum CameraViewPort{
+    ViewPort = 0x2E0,
+}
 
 // ─── MouseService → InputObject → cursor position ───────────────────────
 // `MouseService` is resolved as a child of the DataModel (by name). Its

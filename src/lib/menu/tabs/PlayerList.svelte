@@ -131,10 +131,10 @@
         font: inherit;
         font-size: 10px;
         font-weight: 600;
-        width: 20px;
+        width: 22px;
         background: var(--bg-window);
-        border: 1px solid var(--border);
-        border-radius: 4px;
+        border: 3px solid var(--border);
+        border-radius: 10px;
         color: var(--text-muted);
         padding: 3px 0;
         cursor: pointer;
@@ -148,8 +148,8 @@
         font: inherit;
         font-size: 10px;
         background: var(--bg-window);
-        border: 1px solid var(--border);
-        border-radius: 4px;
+        border: 3px solid var(--border);
+        border-radius: 10px;
         color: var(--text);
         padding: 3px 8px;
         cursor: pointer;

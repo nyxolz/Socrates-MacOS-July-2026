@@ -74,6 +74,7 @@ pub fn current_cursor() -> Option<CGPoint> {
 // `resolve_camera` lives in `security` now (uses XOR'd offsets so the raw
 // literals never appear inline).
 use security::resolve_camera;
+use crate::offsets::CameraViewPort;
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t.clamp(0.0, 1.0) }
 
@@ -182,6 +183,7 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
 
             let state = app_handle.state::<AppState>();
             let cfg = state.aimbot_cfg.lock().unwrap().clone();
+            let is_silent_aim = cfg.aim_type == "Silent Aim";
             if !cfg.enabled && !cfg.trigger_enabled { continue; }
 
             let sdk = match state.sdk.lock().unwrap().clone() {
@@ -202,14 +204,14 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             ];
             let m = [
                 [sdk.read::<f32>(camera + cmo),
-                 sdk.read::<f32>(camera + cmo + 4),
-                 sdk.read::<f32>(camera + cmo + 8)],
+                    sdk.read::<f32>(camera + cmo + 4),
+                    sdk.read::<f32>(camera + cmo + 8)],
                 [sdk.read::<f32>(camera + cmo + 12),
-                 sdk.read::<f32>(camera + cmo + 16),
-                 sdk.read::<f32>(camera + cmo + 20)],
+                    sdk.read::<f32>(camera + cmo + 16),
+                    sdk.read::<f32>(camera + cmo + 20)],
                 [sdk.read::<f32>(camera + cmo + 24),
-                 sdk.read::<f32>(camera + cmo + 28),
-                 sdk.read::<f32>(camera + cmo + 32)],
+                    sdk.read::<f32>(camera + cmo + 28),
+                    sdk.read::<f32>(camera + cmo + 32)],
             ];
 
             let bounds = state.roblox_bounds.lock().unwrap().clone();
@@ -229,7 +231,7 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             // circle + "closest" selection should both be measured from the
             // current cursor, not the geometric screen centre. In Camera
             // mode the centre is the only meaningful reference.
-            let (ref_x, ref_y) = if cfg.aim_type == "Camera" {
+            let (ref_x, ref_y) = if cfg.aim_type == "Camera" || is_silent_aim {
                 (cx_center, cy_center)
             } else {
                 current_cursor()
@@ -325,6 +327,18 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                         match cfg.aim_type.as_str() {
                             "Camera" => {
                                 aim_camera(&sdk, camera, cam_pos, tp, cfg.smoothing, m);
+                            }
+                            "Silent Aim" => {
+                                // Coordonnées de la cible dans la fenêtre de rendu (sans la barre de titre)
+                                let target_x = (sx - win_x) as f32;
+                                let target_y = (sy - win_y - TITLEBAR_HEIGHT as f64) as f32;
+
+                                // Pour que le centre du viewport tombe exactement sur la cible,
+                                // on définit sa taille comme 2 * (coordonnées de la cible).
+                                // Ainsi, le point (target_x, target_y) devient le centre du repère
+                                // et tout tir depuis le centre de l'écran pointera vers la cible.
+                                sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64, target_x * 2.0);
+                                sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64 + 4, target_y * 2.0);
                             }
                             _ => {
                                 if let Some(cur) = current_cursor() {

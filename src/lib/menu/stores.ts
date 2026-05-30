@@ -1,4 +1,4 @@
-import { writable, type Writable } from "svelte/store";
+import { writable, get as getStore, type Writable } from "svelte/store";
 
 export type TabId =
     | "Aiming"
@@ -7,6 +7,7 @@ export type TabId =
     | "Options"
     | "Player List"
     | "Explorer"
+    | "Configs"
     | "Servers"
     | "Settings";
 
@@ -17,6 +18,7 @@ export const TABS: TabId[] = [
     "Options",
     "Player List",
     "Explorer",
+    "Configs",
     "Servers",
     "Settings",
 ];
@@ -58,8 +60,36 @@ export const THEME_PRESETS: { name: string; value: string }[] = [
     { name: "Purple", value: "#d0a8ff" },
 ];
 
+// ─── localStorage-backed config stores ─────────────────────────────
+// Aimbot / Visuals / MenuOptions all persist to localStorage so a fresh
+// Socrate launch restores the user's last setup. The Configs tab reuses
+// the same JSON shape for import/export.
+const AIMBOT_KEY = "socrate.aimbot";
+const VISUALS_KEY = "socrate.visuals";
+const MENU_OPTS_KEY = "socrate.menuOptions";
+
+// Shallow-merge with defaults so newly-introduced fields in a Socrate
+// update fill in cleanly rather than appearing as `undefined`.
+function loadStored<T>(key: string, defaults: T): T {
+    if (typeof localStorage === "undefined") return defaults;
+    const raw = localStorage.getItem(key);
+    if (!raw) return defaults;
+    try {
+        const parsed = JSON.parse(raw);
+        return { ...defaults, ...parsed } as T;
+    } catch { return defaults; }
+}
+
+function persist<T>(key: string, store: Writable<T>) {
+    store.subscribe((v) => {
+        if (typeof localStorage !== "undefined") {
+            localStorage.setItem(key, JSON.stringify(v));
+        }
+    });
+}
+
 export type SelectionMode = "Distance" | "Health" | "Crosshair";
-export type AimType = "Mouse" | "Camera";
+export type AimType = "Mouse" | "Camera" | "Silent Aim";
 
 export type AimbotCfg = {
     enabled: boolean;
@@ -96,7 +126,7 @@ export type AimbotCfg = {
     smooth_path: boolean;
 };
 
-export const aimbot: Writable<AimbotCfg> = writable({
+export const AIMBOT_DEFAULTS: AimbotCfg = {
     enabled: false,
     keybind: "MouseRight",
     aim_type: "Mouse",
@@ -129,7 +159,9 @@ export const aimbot: Writable<AimbotCfg> = writable({
     legit_miss: 0.3,
     humanize: false,
     smooth_path: false,
-});
+};
+export const aimbot: Writable<AimbotCfg> = writable(loadStored(AIMBOT_KEY, AIMBOT_DEFAULTS));
+persist(AIMBOT_KEY, aimbot);
 
 export type TracerOrigin = "Top" | "Center" | "Bottom";
 export type LabelAnchorX = "L" | "C" | "R";
@@ -215,7 +247,7 @@ export type VisualsCfg = {
     min_distance: number;
 };
 
-export const visuals: Writable<VisualsCfg> = writable({
+export const VISUALS_DEFAULTS: VisualsCfg = {
     outline: true,
 
     skeleton: false,
@@ -277,7 +309,9 @@ export const visuals: Writable<VisualsCfg> = writable({
     show_self: false,
     max_distance: 1500,
     min_distance: 3,
-});
+};
+export const visuals: Writable<VisualsCfg> = writable(loadStored(VISUALS_KEY, VISUALS_DEFAULTS));
+persist(VISUALS_KEY, visuals);
 
 // Menu UI options — purely frontend, not synced to backend. `menu_visible`
 // is flipped by a global keybind; while visible, the overlay dims the game
@@ -287,8 +321,43 @@ export type MenuOptionsCfg = {
     toggle_bind: string;
     snow_enabled: boolean;
 };
-export const menuOptions: Writable<MenuOptionsCfg> = writable({
+export const MENU_OPTIONS_DEFAULTS: MenuOptionsCfg = {
     menu_visible: true,
     toggle_bind: "Home",
     snow_enabled: true,
-});
+};
+export const menuOptions: Writable<MenuOptionsCfg> = writable(
+    // menu_visible is volatile — always start visible on launch, ignore the
+    // persisted value for that one field so a hidden menu can't trap the user.
+    { ...loadStored(MENU_OPTS_KEY, MENU_OPTIONS_DEFAULTS), menu_visible: true }
+);
+persist(MENU_OPTS_KEY, menuOptions);
+
+// ─── Bulk apply / export — used by the Configs tab ─────────────────
+export type SocrateConfigFile = {
+    version: number;
+    aimbot: AimbotCfg;
+    visuals: VisualsCfg;
+    menuOptions: MenuOptionsCfg;
+    theme: string;
+};
+
+export function exportCurrentConfig(): SocrateConfigFile {
+    return {
+        version: 1,
+        aimbot: getStore(aimbot),
+        visuals: getStore(visuals),
+        menuOptions: getStore(menuOptions),
+        theme: getStore(theme),
+    };
+}
+
+export function applyImportedConfig(raw: unknown): { ok: boolean; reason?: string } {
+    if (!raw || typeof raw !== "object") return { ok: false, reason: "not an object" };
+    const cfg = raw as Partial<SocrateConfigFile>;
+    if (cfg.aimbot)      aimbot.set({ ...AIMBOT_DEFAULTS, ...cfg.aimbot });
+    if (cfg.visuals)     visuals.set({ ...VISUALS_DEFAULTS, ...cfg.visuals });
+    if (cfg.menuOptions) menuOptions.set({ ...MENU_OPTIONS_DEFAULTS, ...cfg.menuOptions, menu_visible: true });
+    if (typeof cfg.theme === "string" && /^#[0-9a-fA-F]{6}$/.test(cfg.theme)) theme.set(cfg.theme);
+    return { ok: true };
+}

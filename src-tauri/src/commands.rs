@@ -125,6 +125,25 @@ pub fn set_menu_toggle_bind(state: State<AppState>, bind: String) {
 #[tauri::command]
 pub fn get_arch() -> &'static str { security::arch_name() }
 
+/// Write `content` to `~/Desktop/<name>.json`. Used by the Configs tab's
+/// Export button — keeps the file on the user's desktop instead of going
+/// through the browser's download dialog. `name` is sanitised to a safe
+/// filename (`[A-Za-z0-9_-]`) and `.json` is appended if missing. Returns
+/// the absolute path written to on success.
+#[tauri::command]
+pub fn export_config_to_desktop(name: String, content: String) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "$HOME unset".to_string())?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    let stem = if safe.is_empty() { "socrate-config".to_string() } else { safe };
+    let filename = if stem.ends_with(".json") { stem } else { format!("{stem}.json") };
+    let path = format!("{home}/Desktop/{filename}");
+    std::fs::write(&path, content).map_err(|e| format!("write failed: {e}"))?;
+    Ok(path)
+}
+
 // ─── Offset health check for the Output tab ─────────────────────────────
 
 /// Returns `true` iff we can chain `Roblox.base → FakeDataModel → DataModel

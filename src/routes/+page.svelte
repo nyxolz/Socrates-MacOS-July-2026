@@ -305,13 +305,14 @@
         lastSnowTick = now;
         if (ctx) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            // Menu-visible decoration: dim the game (rounded rect, 30%
-            // more transparent than before so the game stays readable
-            // behind the menu) and rain themed snow underneath the ESP/UI.
+            // Menu-visible decoration: dim the game with a light black wash
+            // (rounded rect, low alpha so the game stays clearly readable
+            // behind the snow + menu) and rain themed snow underneath the
+            // ESP/UI.
             if (mcfg?.menu_visible) {
                 const w = window.innerWidth;
                 const h = window.innerHeight;
-                ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+                ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
                 ctx.beginPath();
                 if (typeof (ctx as any).roundRect === "function") {
                     (ctx as any).roundRect(0, 0, w, h, 14);

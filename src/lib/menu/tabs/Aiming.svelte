@@ -9,7 +9,7 @@
 
     const PARTS = ["Head", "Torso", "HumanoidRootPart"] as const;
     const SELECT_MODES = ["Distance", "Health", "Crosshair"] as const;
-    const AIM_TYPES = ["Mouse", "Camera"] as const;
+    const AIM_TYPES = ["Mouse", "Camera", "Silent Aim"] as const;
 </script>
 
 <div class="grid">

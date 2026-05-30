@@ -193,6 +193,7 @@ pub fn run() {
             commands::get_self_ram_bytes,
             commands::diag_check,
             commands::get_arch,
+            commands::export_config_to_desktop,
             commands::list_players,
             commands::set_spectate_target,
             commands::get_spectate_target,
