@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
-
+use core_graphics::event::EventField;
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -50,7 +50,55 @@ fn move_mouse_to(x: f64, y: f64) {
         }
     }
 }
+fn move_mouse_relative(dx: f64, dy: f64) {
+    if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        // Crée un événement de mouvement à la position courante
+        // (la position absolue sera ignorée par le jeu au profit des deltas)
+        let pos = current_cursor().unwrap_or(CGPoint::new(0.0, 0.0));
+        if let Ok(event) = CGEvent::new_mouse_event(
+            src,
+            CGEventType::MouseMoved,
+            pos,
+            CGMouseButton::Left,
+        ) {
+            // Définit les champs delta (entiers longs)
+            event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx as i64);
+            event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy as i64);
+            event.post(CGEventTapLocation::HID);
+        }
+    }
+}
 
+/// Camera-follow mouse move (la version qui fait *tourner la caméra* comme
+/// sur Windows). Le secret macOS : Roblox ne fait pivoter la caméra qu'en
+/// lisant les **deltas relatifs** du périphérique HID — téléporter le curseur
+/// (`warp_mouse_cursor_position`) n'en génère aucun, donc la caméra ne bouge
+/// pas. Ici on :
+///   1. désaccouple le curseur du mouvement HID (`associate(false)`) pour que
+///      le système ne "réabsorbe" pas notre delta en recentrant le curseur,
+///      exactement comme quand un FPS verrouille la souris ;
+///   2. poste un `MouseMoved` portant `DELTA_X/DELTA_Y` — l'équivalent direct
+///      de `SendInput(MOUSEEVENTF_MOVE)` côté Windows ;
+///   3. recolle aussitôt le curseur pour rester réactif hors-jeu.
+///
+/// `pressed` indique si un bouton souris est tenu (aim tenu sur clic droit par
+/// ex.) : on génère alors un `*MouseDragged` à la place de `MouseMoved`, sinon
+/// certains jeux ignorent le delta tant qu'un bouton est enfoncé.
+fn move_camera_delta(dx: f64, dy: f64, pressed: bool) {
+    if dx > -0.01 && dx < 0.01 && dy > -0.01 && dy < 0.01 { return; }
+    let src = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        Ok(s) => s, Err(_) => return,
+    };
+    let pos = current_cursor().unwrap_or(CGPoint::new(0.0, 0.0));
+    let ev_type = if pressed { CGEventType::LeftMouseDragged } else { CGEventType::MouseMoved };
+    let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(false);
+    if let Ok(event) = CGEvent::new_mouse_event(src, ev_type, pos, CGMouseButton::Left) {
+        event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_X, dx as i64);
+        event.set_integer_value_field(EventField::MOUSE_EVENT_DELTA_Y, dy as i64);
+        event.post(CGEventTapLocation::HID);
+    }
+    let _ = CGDisplay::associate_mouse_and_mouse_cursor_position(true);
+}
 fn click_left() {
     let src = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
         Ok(s) => s, Err(_) => return,
@@ -161,7 +209,22 @@ fn rand(state: &mut u32) -> f32 {
     *state ^= *state << 5;
     (*state as f32) / (u32::MAX as f32)
 }
-
+fn move_mouse_physical(x: f64, y: f64) {
+    if let Ok(src) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
+        // CGDisplayMoveCursor utilise la source HID réelle,
+        // générant des événements delta comme un vrai périphérique.
+        // Il faut le point cible en coordonnées globales.
+        let target = CGPoint::new(x, y);
+        if let Ok(event) = CGEvent::new_mouse_event(
+            src,
+            CGEventType::MouseMoved,
+            target,
+            CGMouseButton::Left,
+        ) {
+            event.post(CGEventTapLocation::HID);
+        }
+    }
+}
 /// Map `cfg.part` → slot index inside `CharCache.parts`. Cherry's rig table
 /// puts Head at 0, UpperTorso/Torso at 1, and the HRP fallback at slot 1.
 fn part_slot(part: &str, rig_type: u8) -> usize {
@@ -329,26 +392,41 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                                 aim_camera(&sdk, camera, cam_pos, tp, cfg.smoothing, m);
                             }
                             "Silent Aim" => {
-                                // Coordonnées de la cible dans la fenêtre de rendu (sans la barre de titre)
-                                let target_x = (sx - win_x) as f32;
-                                let target_y = (sy - win_y - TITLEBAR_HEIGHT as f64) as f32;
+                                // Coordonnées de la cible dans la fenêtre de rendu (sans la barre de titre).
+                                // Clampées dans [1, taille] : une cible au bord donnait un viewport
+                                // négatif/nul -> le rayon de tir partait n'importe où (ratés).
+                                let target_x = ((sx - win_x) as f32).clamp(1.0, win_w as f32);
+                                let target_y = ((sy - win_y - TITLEBAR_HEIGHT as f64) as f32)
+                                    .clamp(1.0, render_h as f32);
 
                                 // Pour que le centre du viewport tombe exactement sur la cible,
                                 // on définit sa taille comme 2 * (coordonnées de la cible).
                                 // Ainsi, le point (target_x, target_y) devient le centre du repère
                                 // et tout tir depuis le centre de l'écran pointera vers la cible.
-                                sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64, target_x * 2.0);
-                                sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64 + 4, target_y * 2.0);
+                                // Hyper-spam : le jeu réécrit le viewport chaque
+                                // frame, et au moment du tir notre écriture pouvait
+                                // déjà être écrasée -> silent aim "coupé". On martèle
+                                // la valeur en rafale pour gagner la course au tir.
+                                for _ in 0..8 {
+                                    sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64, target_x * 2.0);
+                                    sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64 + 4, target_y * 2.0);
+                                }
                             }
                             _ => {
+                                // Mode Mouse : on ne téléporte plus le curseur (ça ne
+                                // fait pas tourner la caméra sur macOS). On envoie un
+                                // mouvement RELATIF vers la cible — la caméra suit comme
+                                // sous Windows. Le delta = (cible - curseur) lissé.
                                 if let Some(cur) = current_cursor() {
                                     let smooth = (1.0 - cfg.smoothing as f64).max(0.01);
-                                    let (mut nx, mut ny) = (lerp(cur.x, sx, smooth), lerp(cur.y, sy, smooth));
+                                    let mut dx = (sx - cur.x) * smooth;
+                                    let mut dy = (sy - cur.y) * smooth;
                                     if cfg.humanize {
-                                        nx += (rand(&mut rng) - 0.5) as f64;
-                                        ny += (rand(&mut rng) - 0.5) as f64;
+                                        dx += (rand(&mut rng) - 0.5) as f64;
+                                        dy += (rand(&mut rng) - 0.5) as f64;
                                     }
-                                    move_mouse_to(nx, ny);
+                                    let pressed = cfg.keybind == "MouseLeft" && is_held("MouseLeft");
+                                    move_camera_delta(dx, dy, pressed);
                                 }
                             }
                         }

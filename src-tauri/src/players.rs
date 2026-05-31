@@ -524,6 +524,34 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
                         if full.len() >= caches.len() { caches = full; }
                     }
 
+                    // BETA sticky-target : une passe de découverte rate parfois
+                    // un joueur (occlusion dans le walk, conteneur qui change) ->
+                    // il disparaissait de l'ESP/aimbot ~1 s puis revenait. On
+                    // fusionne : on garde les joueurs déjà connus TOUJOURS vivants
+                    // (Humanoid valide + Health > 0) que cette passe-ci n'a pas
+                    // retrouvés. Un joueur n'est lâché qu'à sa mort / pointeurs KO.
+                    {
+                        let prev = state.char_caches.lock().unwrap().clone();
+                        for old in prev.iter() {
+                            if caches.iter().any(|c| c.char_addr == old.char_addr) { continue; }
+                            if !sdk.is_valid_ptr(old.char_addr) || !sdk.is_valid_ptr(old.humanoid_addr) { continue; }
+                            // Validation STRUCTURELLE (pas de timer) : on garde le
+                            // joueur EN CONTINU tant qu'il est réellement vivant ->
+                            // zéro flicker, retour instantané. Les liens cassent net
+                            // à la mort / respawn / déco (mémoire libérée), donc la
+                            // box fantôme disparaît immédiatement :
+                            //   - le Humanoid est toujours enfant du perso,
+                            //   - le perso est toujours rattaché à l'arbre,
+                            //   - Health > 0.
+                            if sdk.read::<u64>(old.humanoid_addr + Instance::Parent as u64) != old.char_addr { continue; }
+                            if !sdk.is_valid_ptr(sdk.read::<u64>(old.char_addr + Instance::Parent as u64)) { continue; }
+                            let hp = sdk.read::<f32>(old.humanoid_addr + crate::offsets::Humanoid::Health as u64);
+                            if hp.is_finite() && hp > 0.0 {
+                                caches.push(old.clone());
+                            }
+                        }
+                    }
+
                     empty = caches.is_empty();
                     *state.char_caches.lock().unwrap() = Arc::new(caches);
                 }
