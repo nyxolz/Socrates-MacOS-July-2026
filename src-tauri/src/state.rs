@@ -21,6 +21,9 @@ pub struct AimbotCfg {
     // Core
     pub enabled: bool,
     pub keybind: String,
+    /// "Hold" = active while the key is held; "Toggle" = press to enable, press
+    /// again to disable.
+    pub keybind_mode: String,
     pub aim_type: String,
     pub smoothing: f32,
     pub fov_radius: f32,
@@ -55,6 +58,19 @@ pub struct AimbotCfg {
     pub legit_miss: f32,
     pub humanize: bool,
     pub smooth_path: bool,
+    /// Jitter amplitude (px) added by the humanizer — smoothed wander, not white noise.
+    pub humanize_strength: f32,
+    /// Delay (ms) between pressing the aim key and the aimbot engaging — human reaction time.
+    pub reaction_time: f32,
+    /// Keep the current target instead of flickering to the geometrically "best" one each tick.
+    pub sticky_aim: bool,
+    /// Minimum time (ms) a target must be held before the aimbot may switch to another.
+    pub target_switch_delay: f32,
+    /// Scale smoothing by the target's distance inside the FOV: snappier near the
+    /// crosshair, softer at the edge — mimics a human flick-then-track.
+    pub fov_scale_smoothing: bool,
+    /// Cap on per-tick cursor movement (px) in Mouse mode. 0 = uncapped.
+    pub max_speed: f32,
 
 }
 
@@ -63,6 +79,7 @@ impl Default for AimbotCfg {
         Self {
             enabled: false,
             keybind: "MouseRight".into(),
+            keybind_mode: "Hold".into(),
             aim_type: "Mouse".into(),
             smoothing: 0.85,
             fov_radius: 150.0,
@@ -93,6 +110,12 @@ impl Default for AimbotCfg {
             legit_miss: 0.3,
             humanize: false,
             smooth_path: false,
+            humanize_strength: 2.0,
+            reaction_time: 0.0,
+            sticky_aim: false,
+            target_switch_delay: 0.0,
+            fov_scale_smoothing: false,
+            max_speed: 0.0,
         }
     }
 }
@@ -280,7 +303,7 @@ impl Default for AppState {
             char_caches: Mutex::new(Arc::new(Vec::new())),
             aimbot_cfg: Mutex::new(AimbotCfg::default()),
             visuals_cfg: Mutex::new(VisualsCfg::default()),
-            menu_toggle_bind: Mutex::new("Home".into()),
+            menu_toggle_bind: Mutex::new("IntlBackslash".into()),
             local_player_name: Mutex::new(String::new()),
             spectate_target: Mutex::new(0),
             player_relations: Mutex::new(HashMap::new()),

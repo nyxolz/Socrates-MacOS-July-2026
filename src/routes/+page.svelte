@@ -23,12 +23,14 @@
         view_dir: [number, number, number, number] | null;
         skeleton: [number, number, number, number][];
         relation: number; // 0 = enemy (full ESP), 1 = ally (green head dot)
+        world: [number, number, number];
     };
     type EspFrame = {
         markers: Marker[];
         players: EspPlayer[];
         player_count: number;
         camera_pos: [number, number, number];
+        forward: [number, number, number];
         fov: number;
         aspect: number;
         attached: boolean;
@@ -227,6 +229,105 @@
         ctx.stroke();
     }
 
+    // View direction drawn as an arrow: the main shaft plus two barbs at the
+    // tip so the player's facing is obvious at a glance.
+    function drawViewArrow(ctx: CanvasRenderingContext2D,
+                           seg: [number, number, number, number],
+                           color: string, outline: boolean) {
+        const a = ndcToScreen(seg[0], seg[1]);
+        const b = ndcToScreen(seg[2], seg[3]);
+        let dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 1) return;
+        dx /= len; dy /= len;
+        const head = Math.min(12, len * 0.45);   // barb length (px)
+        const cos = Math.cos(Math.PI / 6), sin = Math.sin(Math.PI / 6); // 30°
+        const bx1 = b.x - head * (dx * cos - dy * sin);
+        const by1 = b.y - head * (dx * sin + dy * cos);
+        const bx2 = b.x - head * (dx * cos + dy * sin);
+        const by2 = b.y - head * (dy * cos - dx * sin);
+        const thickness = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+        ctx.moveTo(b.x, b.y); ctx.lineTo(bx1, by1);
+        ctx.moveTo(b.x, b.y); ctx.lineTo(bx2, by2);
+        if (outline) {
+            ctx.lineWidth = thickness + 1.5;
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+            ctx.stroke();
+        }
+        ctx.lineWidth = thickness;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+    }
+
+    // ─── Radar — top-right circular minimap ─────────────────────────────
+    // Local player (camera) at the centre, "up" = camera look direction.
+    // Each emitted player is plotted by its world XZ offset, rotated into the
+    // camera's frame and scaled by `radar_range`.
+    function drawRadar(ctx: CanvasRenderingContext2D, frame: EspFrame, cfg: VisualsCfg) {
+        const R = Math.max(40, cfg.radar_size) / 2;
+        const margin = 14;
+        const cx = window.innerWidth - margin - R;
+        const cy = TITLEBAR_HEIGHT + margin + R;
+        const range = Math.max(20, cfg.radar_range);
+
+        // Backdrop + border.
+        ctx.beginPath();
+        ctx.arc(cx, cy, R, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = hexToRgba(themeColor, 0.7);
+        ctx.stroke();
+        // Cross hairs.
+        ctx.beginPath();
+        ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+        ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = hexToRgba(themeColor, 0.18);
+        ctx.stroke();
+
+        // Camera forward (horizontal) → "up" axis; perpendicular → "right".
+        let fx = frame.forward[0], fz = frame.forward[2];
+        const fl = Math.hypot(fx, fz) || 1;
+        fx /= fl; fz /= fl;
+        const rx = -fz, rz = fx; // forward rotated +90°
+
+        for (const p of frame.players) {
+            if (p.relation === 2) continue;
+            const dx = p.world[0] - frame.camera_pos[0];
+            const dz = p.world[2] - frame.camera_pos[2];
+            const fwd = dx * fx + dz * fz;   // ahead (+) / behind (-)
+            const right = dx * rx + dz * rz; // right (+) / left (-)
+            let px = (right / range) * R;
+            let py = -(fwd / range) * R;
+            // Clamp out-of-range blips to the rim.
+            const d = Math.hypot(px, py);
+            if (d > R) { px = (px / d) * R; py = (py / d) * R; }
+            const color = p.relation === 1 ? cfg.radar_ally_color : cfg.radar_enemy_color;
+            ctx.beginPath();
+            ctx.arc(cx + px, cy + py, 3, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+            ctx.stroke();
+        }
+
+        // Local player marker (centre) — a small triangle pointing up.
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 5);
+        ctx.lineTo(cx - 4, cy + 4);
+        ctx.lineTo(cx + 4, cy + 4);
+        ctx.closePath();
+        ctx.fillStyle = themeColor;
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.stroke();
+    }
+
     // Username → loaded HTMLImageElement. We fire the URL fetch + image
     // decode lazily on the first frame we see a player, and cache forever
     // after. `null` means "load in progress or failed" — we still try to
@@ -352,7 +453,7 @@
                     strokeSegments(ctx, p.skeleton, cfg.skeleton_color, cfg.skeleton_thickness, outline);
                 }
                 if (cfg.view_dir && p.view_dir) {
-                    strokeSegments(ctx, [p.view_dir], cfg.view_dir_color, 1.5, outline);
+                    drawViewArrow(ctx, p.view_dir, cfg.view_dir_color, outline);
                 }
                 if (cfg.box2d && p.box2d) {
                     strokeBox2D(ctx, p.box2d, cfg.box2d_color, cfg.box2d_thickness, outline,
@@ -417,6 +518,8 @@
                 }
                 drawFovCircle(ctx, cx, cy, acfg.fov_radius, acfg.fill_fov, acfg.fov_color, acfg.fov_fill_color);
             }
+
+            if (cfg.radar) drawRadar(ctx, lastFrame, cfg);
         }
         rafHandle = requestAnimationFrame(renderLoop);
     }

@@ -94,6 +94,7 @@ export type AimType = "Mouse" | "Camera" | "Silent Aim";
 export type AimbotCfg = {
     enabled: boolean;
     keybind: string;
+    keybind_mode: "Hold" | "Toggle";
     aim_type: AimType;
     smoothing: number;
     fov_radius: number;
@@ -124,11 +125,18 @@ export type AimbotCfg = {
     legit_miss: number;
     humanize: boolean;
     smooth_path: boolean;
+    humanize_strength: number;
+    reaction_time: number;
+    sticky_aim: boolean;
+    target_switch_delay: number;
+    fov_scale_smoothing: boolean;
+    max_speed: number;
 };
 
 export const AIMBOT_DEFAULTS: AimbotCfg = {
     enabled: false,
     keybind: "MouseRight",
+    keybind_mode: "Hold",
     aim_type: "Mouse",
     smoothing: 0.85,
     fov_radius: 150,
@@ -159,6 +167,12 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     legit_miss: 0.3,
     humanize: false,
     smooth_path: false,
+    humanize_strength: 2.0,
+    reaction_time: 0,
+    sticky_aim: false,
+    target_switch_delay: 0,
+    fov_scale_smoothing: false,
+    max_speed: 0,
 };
 export const aimbot: Writable<AimbotCfg> = writable(loadStored(AIMBOT_KEY, AIMBOT_DEFAULTS));
 persist(AIMBOT_KEY, aimbot);
@@ -245,6 +259,13 @@ export type VisualsCfg = {
     /// a belt+braces self-filter on top of the LocalPlayer.Name match so
     /// first-person games (camera inside the head) never ESP yourself.
     min_distance: number;
+
+    // Radar — top-right circular minimap with the local player at the centre.
+    radar: boolean;
+    radar_size: number;          // diameter in px
+    radar_range: number;         // world studs mapped to the radar radius
+    radar_enemy_color: string;
+    radar_ally_color: string;
 };
 
 export const VISUALS_DEFAULTS: VisualsCfg = {
@@ -309,6 +330,12 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
     show_self: false,
     max_distance: 1500,
     min_distance: 3,
+
+    radar: false,
+    radar_size: 180,
+    radar_range: 200,
+    radar_enemy_color: "#ff4d4d",
+    radar_ally_color: "#22e06a",
 };
 export const visuals: Writable<VisualsCfg> = writable(loadStored(VISUALS_KEY, VISUALS_DEFAULTS));
 persist(VISUALS_KEY, visuals);
@@ -323,7 +350,7 @@ export type MenuOptionsCfg = {
 };
 export const MENU_OPTIONS_DEFAULTS: MenuOptionsCfg = {
     menu_visible: true,
-    toggle_bind: "Home",
+    toggle_bind: "IntlBackslash",
     snow_enabled: true,
 };
 export const menuOptions: Writable<MenuOptionsCfg> = writable(

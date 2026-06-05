@@ -7,4 +7,4 @@
 //! matches `pub const VERSION: &str = "..."` exactly. Don't change the
 //! shape without updating the script.
 
-pub const VERSION: &str = "AJCJ1iQFZw";
+pub const VERSION: &str = "rFrzwD7sMj";

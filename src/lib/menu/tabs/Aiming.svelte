@@ -10,6 +10,7 @@
     const PARTS = ["Head", "Torso", "HumanoidRootPart"] as const;
     const SELECT_MODES = ["Distance", "Health", "Crosshair"] as const;
     const AIM_TYPES = ["Mouse", "Camera", "Silent Aim"] as const;
+    const KEYBIND_MODES = ["Hold", "Toggle"] as const;
 </script>
 
 <div class="grid">
@@ -19,6 +20,7 @@
                 <Toggle bind:checked={$aimbot.enabled} label="Enabled" />
                 <KeybindInput inline bind:value={$aimbot.keybind} />
             </div>
+            <Dropdown label="Keybind mode" bind:value={$aimbot.keybind_mode} options={KEYBIND_MODES} />
             <Dropdown label="Aim type" bind:value={$aimbot.aim_type} options={AIM_TYPES} />
             <Dropdown label="Target part" bind:value={$aimbot.part} options={PARTS} />
             <Slider label="FOV radius" bind:value={$aimbot.fov_radius}
@@ -33,6 +35,10 @@
             </div>
             <Slider label="Smoothing" bind:value={$aimbot.smoothing}
                 min={0.01} max={1} step={0.01} format={(v) => v.toFixed(2)} />
+            <Toggle bind:checked={$aimbot.fov_scale_smoothing} label="FOV-scaled smoothing" />
+            <Slider label="Max speed" bind:value={$aimbot.max_speed}
+                min={0} max={200} step={1}
+                format={(v) => (v === 0 ? "off" : v.toFixed(0) + " px")} />
         </Section>
 
         <Section title="Prediction" icon="zap" active={$aimbot.prediction_enabled}>
@@ -71,8 +77,18 @@
             <Toggle bind:checked={$aimbot.legit_enabled} label="Legit mode" />
             <Slider label="Miss rate" bind:value={$aimbot.legit_miss}
                 min={0} max={0.9} step={0.01} format={(v) => (v * 100).toFixed(0) + "%"} />
+            <Slider label="Reaction time" bind:value={$aimbot.reaction_time}
+                min={0} max={500} step={5} format={(v) => v.toFixed(0) + " ms"} />
             <Toggle bind:checked={$aimbot.humanize} label="Humanize aim" />
+            <Slider label="Humanize strength" bind:value={$aimbot.humanize_strength}
+                min={0} max={10} step={0.1} format={(v) => v.toFixed(1) + " px"} />
             <Toggle bind:checked={$aimbot.smooth_path} label="Smooth path" />
+        </Section>
+
+        <Section title="Target lock" icon="target" active={$aimbot.sticky_aim}>
+            <Toggle bind:checked={$aimbot.sticky_aim} label="Sticky aim" />
+            <Slider label="Switch delay" bind:value={$aimbot.target_switch_delay}
+                min={0} max={1000} step={10} format={(v) => v.toFixed(0) + " ms"} />
         </Section>
     </div>
 </div>

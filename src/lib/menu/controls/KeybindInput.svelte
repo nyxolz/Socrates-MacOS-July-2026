@@ -4,6 +4,8 @@
     export let label: string | undefined = undefined;
     export let value: string;
     export let inline: boolean = false;
+    /// When true, mouse buttons can't be bound — keyboard keys only.
+    export let noMouse: boolean = false;
 
     let listening = false;
 
@@ -26,6 +28,27 @@
         return e.code || e.key;
     }
 
+    // Friendly display for codes whose name doesn't read like the printed key.
+    const PRETTY: Record<string, string> = {
+        IntlBackslash: ">",
+        Period: ".",
+        Comma: ",",
+        Slash: "/",
+        Backslash: "\\",
+        Minus: "-",
+        Equal: "=",
+        Semicolon: ";",
+        Quote: "'",
+        Backquote: "`",
+        BracketLeft: "[",
+        BracketRight: "]",
+    };
+    function pretty(v: string): string {
+        if (!v) return v;
+        if (PRETTY[v]) return PRETTY[v];
+        return v.replace(/^Key/, "").replace(/^Digit/, "");
+    }
+
     function onKey(e: KeyboardEvent) {
         e.preventDefault();
         e.stopPropagation();
@@ -43,7 +66,7 @@
 
     function attach() {
         window.addEventListener("keydown", onKey, true);
-        window.addEventListener("mousedown", onMouse, true);
+        if (!noMouse) window.addEventListener("mousedown", onMouse, true);
     }
     function detach() {
         window.removeEventListener("keydown", onKey, true);
@@ -64,7 +87,7 @@
         on:mousedown={startListen}
         title="Click then press any key or mouse button (Esc to cancel)"
     >
-        {listening ? "..." : value || "bind"}
+        {listening ? "..." : pretty(value) || "bind"}
     </button>
 {:else}
     <div class="kb">
@@ -75,7 +98,7 @@
             on:mousedown={startListen}
             title="Click then press any key or mouse button (Esc to cancel)"
         >
-            {listening ? "press a key..." : value || "click to bind"}
+            {listening ? "press a key..." : pretty(value) || "click to bind"}
         </button>
     </div>
 {/if}

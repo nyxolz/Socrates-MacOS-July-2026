@@ -50,6 +50,8 @@ pub struct EspPlayer {
     /// 0 = enemy (full ESP), 1 = ally (only a green head dot is drawn).
     /// Neutrals are never emitted into the frame.
     pub relation: u8,
+    /// World position (head/centre anchor) — used by the radar.
+    pub world: [f32; 3],
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -58,6 +60,8 @@ pub struct EspFrame {
     pub players: Vec<EspPlayer>,
     pub player_count: usize,
     pub camera_pos: [f32; 3],
+    /// Camera look direction (world) — radar uses its X/Z to orient "up".
+    pub forward: [f32; 3],
     pub fov: f32,
     pub aspect: f32,
     pub attached: bool,
@@ -116,13 +120,15 @@ fn project_marker(
     }
 }
 
-/// Read the LookVector from a primitive. Roblox stores `-LookVector` at
-/// (0xC8, 0xD4, 0xE0); we negate to get the actual look direction.
+/// Read the LookVector from a primitive. CFrame rotation = 9 floats just
+/// before Position (0xEC), starting at 0xC8 (layout i*12 + j*4, columns
+/// Right/Up/Back). (0xC8,0xD4,0xE0) is the Right column → trait latéral.
+/// LookVector = -(Back column) = -(m[i][2]) = -(0xD0, 0xDC, 0xE8).
 fn read_look_dir(sdk: &SdkI, primitive: u64) -> [f32; 3] {
     let dir = [
-        -sdk.read::<f32>(primitive + 0xC8),
-        -sdk.read::<f32>(primitive + 0xD4),
-        -sdk.read::<f32>(primitive + 0xE0),
+        -sdk.read::<f32>(primitive + 0xD0),
+        -sdk.read::<f32>(primitive + 0xDC),
+        -sdk.read::<f32>(primitive + 0xE8),
     ];
     let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
     if l < 1e-5 || !l.is_finite() { return [0.0, 0.0, 1.0]; }
@@ -157,6 +163,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                         players: vec![],
                         player_count: 0,
                         camera_pos: [0.0; 3],
+                        forward: [0.0, 0.0, 1.0],
                         fov: 70.0,
                         aspect: 16.0 / 9.0,
                         attached: true,
@@ -237,6 +244,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                             view_dir: None,
                             skeleton: Vec::new(),
                             relation: 1,
+                            world: anchor,
                         });
                     }
                     continue;
@@ -392,17 +400,24 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     view_dir,
                     skeleton,
                     relation: 0,
+                    world: anchor,
                 });
             }
 
             let cursor_local = state.roblox_bounds.lock().unwrap()
                 .and_then(|(bx, by, _, _)| current_cursor().map(|c| (c.x - bx, c.y - by)));
 
+            // Camera look direction (world). Roblox CFrame stores -lookVector
+            // in the third column of the rotation matrix; negate to get the
+            // forward the radar orients "up" to.
+            let forward = [-matrix[0][2], -matrix[1][2], -matrix[2][2]];
+
             let _ = app_handle.emit("esp_frame", EspFrame {
                 markers: vec![origin],
                 player_count: players.len(),
                 players,
                 camera_pos: cam_pos,
+                forward,
                 fov,
                 aspect,
                 attached: true,

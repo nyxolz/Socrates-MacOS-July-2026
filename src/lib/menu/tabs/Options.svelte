@@ -34,7 +34,7 @@
     </div>
     <div class="col">
         <Section title="Menu" icon="sliders" active>
-            <KeybindInput label="Toggle menu" bind:value={$menuOptions.toggle_bind} />
+            <KeybindInput label="Hide menu" noMouse bind:value={$menuOptions.toggle_bind} />
             <Toggle label="Snow effect" bind:checked={$menuOptions.snow_enabled} />
         </Section>
     </div>

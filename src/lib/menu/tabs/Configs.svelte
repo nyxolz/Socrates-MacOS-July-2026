@@ -7,6 +7,30 @@
     let name = "socrate-config";
     let status = "";
     let fileInput: HTMLInputElement;
+    let pasteText = "";
+
+    function applyPasted() {
+        const text = pasteText.trim();
+        if (!text) { status = "paste a config first"; return; }
+        try {
+            const parsed = JSON.parse(text);
+            const r = applyImportedConfig(parsed);
+            status = r.ok ? "config applied" : `import failed: ${r.reason ?? "unknown"}`;
+        } catch (err) {
+            status = `import failed: ${err}`;
+        }
+    }
+
+    function copyCurrent() {
+        const content = JSON.stringify(exportCurrentConfig(), null, 2);
+        pasteText = content;
+        try {
+            navigator.clipboard?.writeText(content);
+            status = "current config copied to clipboard";
+        } catch {
+            status = "current config loaded below — select & copy";
+        }
+    }
 
     async function doExport() {
         const cfg = exportCurrentConfig();
@@ -67,6 +91,24 @@
             <div class="hint">Replaces aimbot, visuals, menu options and theme with the file contents.</div>
         </Section>
     </div>
+    <div class="col wide">
+        <Section title="Paste config" icon="terminal" active={!!pasteText.trim()}>
+            <textarea
+                class="paste"
+                bind:value={pasteText}
+                spellcheck="false"
+                placeholder={'Paste a Socrate config (JSON) here…'}
+            ></textarea>
+            <div class="btnrow">
+                <Button label="Apply pasted" onclick={applyPasted} />
+                <Button label="Copy current" onclick={copyCurrent} />
+            </div>
+            <div class="hint">
+                Paste a shared config and hit <code>Apply pasted</code>, or hit
+                <code>Copy current</code> to dump yours here (also copied to clipboard) to share.
+            </div>
+        </Section>
+    </div>
     {#if status}
         <div class="status">{status}</div>
     {/if}
@@ -81,6 +123,25 @@
         align-items: start;
     }
     .col { display: flex; flex-direction: column; min-width: 0; gap: 6px; }
+    .wide { grid-column: 1 / -1; }
+    .paste {
+        width: 100%;
+        box-sizing: border-box;
+        min-height: 130px;
+        resize: vertical;
+        background: var(--bg-input);
+        border: 3px solid var(--border);
+        border-radius: 10px;
+        color: var(--text);
+        font-family: ui-monospace, Menlo, monospace;
+        font-size: 10px;
+        line-height: 1.4;
+        padding: 6px 8px;
+        outline: none;
+    }
+    .paste:focus { border-color: var(--accent); }
+    .btnrow { display: flex; gap: 6px; margin-top: 6px; }
+    .btnrow :global(button) { flex: 1; }
     .field { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
     .lab {
         font-size: 11px;

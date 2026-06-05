@@ -126,6 +126,24 @@ use crate::offsets::CameraViewPort;
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 { a + (b - a) * t.clamp(0.0, 1.0) }
 
+/// Classic Hermite smoothstep (ease-in-out) on `[0,1]`.
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Effective smoothing for this tick. With `fov_scale` on, the smoothing is
+/// scaled by how far the target sits inside the FOV: near the crosshair the
+/// aim is snappier (less smoothing), at the edge it keeps the full configured
+/// value — a human flicks toward a far target, then tracks gently up close.
+fn effective_smoothing(base: f32, scr_d: f64, fov_radius: f32, fov_scale: bool) -> f32 {
+    if !fov_scale || fov_radius <= 1.0 {
+        return base;
+    }
+    let t = (scr_d as f32 / fov_radius).clamp(0.0, 1.0); // 0 = centre, 1 = edge
+    (base * (0.2 + 0.8 * t)).clamp(0.0, 0.99)
+}
+
 // ─── Camera-write aim (alternative to mouse-warp) ───────────────────────
 // Computes the look-at orientation matrix that points the camera at
 // `target` from `cam_pos`, lerps it with the camera's current matrix, then
@@ -241,6 +259,30 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
         let mut burst_left: u32 = 0;
         let mut rng: u32 = 0x12345678;
 
+        // ── Legit / humanizer persistent state ──────────────────────────
+        // When the aim key was first held (reaction-time gate). None = not held.
+        let mut aim_press_started: Option<Instant> = None;
+        // Currently locked target (char_addr) + when we locked it (sticky aim
+        // + target-switch delay).
+        let mut locked_target: Option<u64> = None;
+        let mut locked_since = Instant::now();
+        // Low-pass-filtered jitter offset — the humanizer wanders smoothly
+        // toward fresh random goals instead of teleporting (white noise).
+        let mut jitter = [0.0f32, 0.0f32];
+        let mut jitter_goal = [0.0f32, 0.0f32];
+
+        // Toggle-mode state for the aim keybind: `aim_toggled` is flipped on
+        // each fresh press (rising edge tracked via `aim_key_prev`).
+        let mut aim_toggled = false;
+        let mut aim_key_prev = false;
+
+        // Supervisor: a transient panic in the hot loop (e.g. a bad read right
+        // after a place change on rejoin) must not kill the aimbot for the rest
+        // of the session — the ESP thread survives such events, so the aimbot
+        // should too. Run the loop under catch_unwind and restart it on panic;
+        // the persistent state declared above is preserved across restarts.
+        loop {
+          let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         loop {
             thread::sleep(Duration::from_millis(0));
 
@@ -253,8 +295,32 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                 Some(s) => s, None => continue,
             };
 
-            let aim_on = cfg.enabled && is_held(&cfg.keybind);
+            // Aim key state. In "Toggle" mode a fresh press flips a latch
+            // (click to enable, click again to disable); otherwise the aimbot
+            // is active only while the key is physically held ("Hold").
+            let aim_key_down = is_held(&cfg.keybind);
+            if cfg.keybind_mode == "Toggle" && cfg.enabled {
+                if aim_key_down && !aim_key_prev { aim_toggled = !aim_toggled; }
+            } else {
+                aim_toggled = false; // clean latch in Hold mode or when disabled
+            }
+            aim_key_prev = aim_key_down;
+
+            let aim_on = cfg.enabled
+                && if cfg.keybind_mode == "Toggle" { aim_toggled } else { aim_key_down };
             let trig_on = cfg.trigger_enabled && is_held(&cfg.trigger_keybind);
+
+            // Reaction-time gate: on a fresh key press, wait `reaction_time` ms
+            // before the aim actually engages (human reflex). Released key resets.
+            let react_ready = if aim_on {
+                let started = *aim_press_started.get_or_insert_with(Instant::now);
+                started.elapsed().as_millis() as f32 >= cfg.reaction_time
+            } else {
+                aim_press_started = None;
+                false
+            };
+            if !aim_on { locked_target = None; }
+
             if !aim_on && !trig_on { continue; }
 
             let camera = match resolve_camera(&sdk) { Some(c) => c, None => continue };
@@ -304,8 +370,11 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             let now = Instant::now();
             let fov_sq = (cfg.fov_radius as f64).powi(2);
 
-            // best = (score, screen_x, screen_y, screen_distance, world_target)
-            let mut best: Option<(f64, f64, f64, f64, [f32; 3])> = None;
+            // best = (score, screen_x, screen_y, screen_distance, world_target, char_addr)
+            let mut best: Option<(f64, f64, f64, f64, [f32; 3], u64)> = None;
+            // The candidate matching the currently-locked target, if still valid
+            // and inside the FOV — used by sticky aim / target-switch delay.
+            let mut locked_cand: Option<(f64, f64, f64, f64, [f32; 3], u64)> = None;
 
             for cache in caches.iter() {
                 // Only enemies (relation 0) are targetable. Allies (1) and
@@ -372,24 +441,60 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                     }
                 };
 
-                if best.map_or(true, |(s, _, _, _, _)| score < s) {
-                    best = Some((score, sx, sy, scr_d, tp));
+                let cand = (score, sx, sy, scr_d, tp, cache.char_addr);
+                if best.map_or(true, |(s, ..)| score < s) {
+                    best = Some(cand);
+                }
+                if Some(cache.char_addr) == locked_target {
+                    locked_cand = Some(cand);
                 }
             }
+
+            // ── Sticky aim / target-switch delay ────────────────────────
+            // Default: track whatever scored best. Sticky aim keeps the locked
+            // target as long as it stays valid + in-FOV; we only allow a switch
+            // once `target_switch_delay` ms have elapsed since the last lock.
+            let chosen = if cfg.sticky_aim {
+                match (locked_cand, best) {
+                    (Some(lc), Some(b)) => {
+                        let held = locked_since.elapsed().as_millis() as f32;
+                        if b.5 != lc.5 && held >= cfg.target_switch_delay {
+                            locked_target = Some(b.5);
+                            locked_since = now;
+                            Some(b)
+                        } else {
+                            Some(lc) // keep locked target
+                        }
+                    }
+                    // Locked target gone → acquire the new best.
+                    (None, Some(b)) => {
+                        locked_target = Some(b.5);
+                        locked_since = now;
+                        Some(b)
+                    }
+                    _ => None,
+                }
+            } else {
+                if let Some(b) = best { locked_target = Some(b.5); }
+                best
+            };
 
             // Aim — Mouse warps the OS cursor; Camera writes the orientation
             // matrix directly so the in-game camera snaps onto the target
             // without ever touching `CameraType` (which would lock the
             // character controller and freeze player movement).
-            if aim_on {
-                if let Some((_, sx, sy, _, tp)) = best {
+            if aim_on && react_ready {
+                if let Some((_, sx, sy, scr_d, tp, _)) = chosen {
                     let miss = cfg.legit_enabled
                         && cfg.legit_miss > 0.0
                         && rand(&mut rng) < cfg.legit_miss;
+                    // Smoothing for this tick — softened at the FOV edge when enabled.
+                    let eff_smooth =
+                        effective_smoothing(cfg.smoothing, scr_d, cfg.fov_radius, cfg.fov_scale_smoothing);
                     if !miss {
                         match cfg.aim_type.as_str() {
                             "Camera" => {
-                                aim_camera(&sdk, camera, cam_pos, tp, cfg.smoothing, m);
+                                aim_camera(&sdk, camera, cam_pos, tp, eff_smooth, m);
                             }
                             "Silent Aim" => {
                                 // Coordonnées de la cible dans la fenêtre de rendu (sans la barre de titre).
@@ -418,12 +523,46 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                                 // mouvement RELATIF vers la cible — la caméra suit comme
                                 // sous Windows. Le delta = (cible - curseur) lissé.
                                 if let Some(cur) = current_cursor() {
-                                    let smooth = (1.0 - cfg.smoothing as f64).max(0.01);
-                                    let mut dx = (sx - cur.x) * smooth;
-                                    let mut dy = (sy - cur.y) * smooth;
+                                    let raw_dx = sx - cur.x;
+                                    let raw_dy = sy - cur.y;
+                                    let mut step = (1.0 - eff_smooth as f64).max(0.01);
+                                    // smooth_path: ease-out — decelerate as the
+                                    // cursor closes the last ~80 px on the target
+                                    // so the lock settles instead of snapping.
+                                    if cfg.smooth_path {
+                                        let d = (raw_dx * raw_dx + raw_dy * raw_dy).sqrt();
+                                        let ease = smoothstep((d / 80.0) as f32) as f64;
+                                        step *= 0.25 + 0.75 * ease;
+                                    }
+                                    let mut dx = raw_dx * step;
+                                    let mut dy = raw_dy * step;
                                     if cfg.humanize {
-                                        dx += (rand(&mut rng) - 0.5) as f64;
-                                        dy += (rand(&mut rng) - 0.5) as f64;
+                                        // Advance the low-pass jitter toward a fresh
+                                        // random goal once it has nearly arrived —
+                                        // smooth organic wander, not per-tick noise.
+                                        let amp = cfg.humanize_strength;
+                                        if (jitter[0] - jitter_goal[0]).abs() < 0.1
+                                            && (jitter[1] - jitter_goal[1]).abs() < 0.1
+                                        {
+                                            jitter_goal = [
+                                                (rand(&mut rng) * 2.0 - 1.0) * amp,
+                                                (rand(&mut rng) * 2.0 - 1.0) * amp,
+                                            ];
+                                        }
+                                        jitter[0] += (jitter_goal[0] - jitter[0]) * 0.15;
+                                        jitter[1] += (jitter_goal[1] - jitter[1]) * 0.15;
+                                        dx += jitter[0] as f64;
+                                        dy += jitter[1] as f64;
+                                    }
+                                    // Per-tick speed cap (px) — bounds how fast the
+                                    // cursor can travel so flicks look human.
+                                    if cfg.max_speed > 0.0 {
+                                        let sp = (dx * dx + dy * dy).sqrt();
+                                        let cap = cfg.max_speed as f64;
+                                        if sp > cap {
+                                            dx = dx / sp * cap;
+                                            dy = dy / sp * cap;
+                                        }
                                     }
                                     let pressed = cfg.keybind == "MouseLeft" && is_held("MouseLeft");
                                     move_camera_delta(dx, dy, pressed);
@@ -436,7 +575,7 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
 
             // Trigger
             if trig_on {
-                if let Some((_, _, _, scr_d, _)) = best {
+                if let Some((_, _, _, scr_d, ..)) = best {
                     if scr_d < 6.0 {
                         let delay = cfg.trigger_delay as u128;
                         let since = now.duration_since(last_shot).as_millis();
@@ -452,6 +591,12 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                     }
                 }
             }
+        }
+          }));
+          // Reached only if the hot loop panicked. Pause briefly, then the
+          // outer loop restarts it with the preserved state intact.
+          if outcome.is_ok() { break; }
+          thread::sleep(Duration::from_millis(200));
         }
     });
 }

@@ -187,18 +187,18 @@ const fn compute_key() -> u64 {
     k
 }
 
-// ARM and Intel Roblox builds expose two different `base + entry` offsets,
-// AND two different chains to reach the DataModel:
-//   • ARM  : `read(base + 0x61E8760)` → FakeDataModel*, then `read(+0x18)` → DataModel.
-//   • Intel: `read(base + 0x61E8768)` is already the DataModel — no second deref.
+// ARM and Intel Roblox builds expose two different `base + entry` offsets, but
+// the same chain: the slot points at the FakeDataModel and its `+0x18` field
+// holds the live DataModel.
+//   • ARM  : `read(base + 0x605D2F0)` → FakeDataModel*, then `read(+0x18)` → DataModel.
+//   • Intel: `read(base + 0x6411F38)` → FakeDataModel*, then `read(+0x18)` → DataModel.
 // All offsets are XOR-obfuscated; the active pair is selected at compile time
 // via `#[cfg(target_arch = …)]` below.
 #[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMARM:   u64 = 0x6024748u64 ^ KEY_USED_AT_COMPILE;
+const ENC_ENTRY_FAKE_DMARM:   u64 = 0x605D2F0u64 ^ KEY_USED_AT_COMPILE;
 #[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x61E8768u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
-#[allow(dead_code)]
-const ENC_FDM_DATAMODELARM:   u64 = 0x18u64      ^ KEY_USED_AT_COMPILE;
+const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x6411F38u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
+const ENC_FDM_DATAMODEL:      u64 = 0x18u64      ^ KEY_USED_AT_COMPILE;
 const ENC_DM_WORKSPACE:       u64 = 0x168u64     ^ KEY_USED_AT_COMPILE;
 const ENC_WS_CAMERA:          u64 = 0x460u64     ^ KEY_USED_AT_COMPILE;
 
@@ -208,9 +208,8 @@ fn off_entry_fake_dm_arm()   -> u64 { ENC_ENTRY_FAKE_DMARM   ^ *RT_KEY }
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 fn off_entry_fake_dm_intel() -> u64 { ENC_ENTRY_FAKE_DMINTEL ^ *RT_KEY }
-#[cfg(target_arch = "aarch64")]
 #[inline(never)]
-fn off_fdm_datamodel_arm()   -> u64 { ENC_FDM_DATAMODELARM   ^ *RT_KEY }
+fn off_fdm_datamodel()       -> u64 { ENC_FDM_DATAMODEL      ^ *RT_KEY }
 #[inline(never)]
 pub fn off_dm_workspace()    -> u64 { ENC_DM_WORKSPACE       ^ *RT_KEY }
 #[inline(never)]
@@ -231,99 +230,28 @@ pub const fn arch_name() -> &'static str {
 
 use crate::sdk::SdkI;
 
-/// ARM build: `base + 0x61E8760` points at a FakeDataModel struct whose
-/// `DataModel` field is at +0x18 — two reads to reach the DataModel.
+/// ARM build: `base + 0x605D2F0` points at the FakeDataModel; its `+0x18` field
+/// holds the live DataModel. Both reads happen every call so leaving/rejoining
+/// a game resolves the new DataModel.
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
     let fdm = sdk.read::<u64>(sdk.base + off_entry_fake_dm_arm());
     if !sdk.is_valid_ptr(fdm) { return None; }
-    let dm = sdk.read::<u64>(fdm + off_fdm_datamodel_arm());
+    let dm = sdk.read::<u64>(fdm + off_fdm_datamodel());
     if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
 }
 
-// ─── Intel: entry-offset auto-discovery ─────────────────────────────
-//
-// The hardcoded `0x61E8768` was derived against the Rosetta-translated
-// image of the Intel Roblox binary. On *native* Intel macOS the same
-// `.dmg` lays its segments out differently, so the FakeDataModel slot
-// lands at a different file offset. We anchor on the unique property
-// that a real DataModel always exposes `Workspace` at `DM + 0x168`
-// (whose Parent points back to the DataModel), scan a ±48 MB window
-// around the Rosetta hint, and cache the first slot that satisfies
-// both anchors. Discovery happens at most once per process.
-
-#[cfg(target_arch = "x86_64")]
-static DISCOVERED_ENTRY: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_arch = "x86_64")]
-static DISCOVERY_ATTEMPTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-#[cfg(target_arch = "x86_64")]
-fn validate_dm(sdk: &SdkI, dm: u64) -> bool {
-    if !sdk.is_valid_ptr(dm) { return false; }
-    let ws = sdk.read::<u64>(dm + 0x168);
-    if !sdk.is_valid_ptr(ws) { return false; }
-    if sdk.read::<u64>(ws + 0x70) != dm { return false; }
-    crate::sdk::name_of(sdk, ws) == "Workspace"
-}
-
-#[cfg(target_arch = "x86_64")]
-fn discover_entry_offset(sdk: &SdkI) -> Option<u64> {
-    const HINT: u64 = 0x61E8768;
-    const WIN:  u64 = 0x0300_0000;     // ±48 MB
-    const CHUNK: usize = 0x10_0000;    // 1 MB
-
-    let start = HINT.saturating_sub(WIN) & !7;
-    let end   = HINT + WIN;
-
-    let mut off = start;
-    while off < end {
-        let want = ((end - off) as usize).min(CHUNK);
-        let buf = sdk.vm_read_bulk(sdk.base + off, want);
-        let n = buf.len();
-        let mut i: usize = 0;
-        while i + 8 <= n {
-            let cand = u64::from_le_bytes([
-                buf[i],   buf[i+1], buf[i+2], buf[i+3],
-                buf[i+4], buf[i+5], buf[i+6], buf[i+7],
-            ]);
-            if validate_dm(sdk, cand) {
-                return Some(off + i as u64);
-            }
-            i += 8;
-        }
-        off += CHUNK as u64;
-    }
-    None
-}
-
-/// Intel build: `base + entry` holds the DataModel pointer directly
-/// (no FakeDataModel wrapper). Replay any cached entry offset, fall
-/// back to the Rosetta-derived hint with a strong Workspace validator,
-/// and only scan the binary if both miss.
+/// Intel build: `base + 0x6411F38` points at the FakeDataModel; its `+0x18`
+/// field holds the live DataModel. Both reads happen every call so
+/// leaving/rejoining a game resolves the new DataModel.
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
-    let cached = DISCOVERED_ENTRY.load(Ordering::Relaxed);
-    if cached != 0 {
-        let dm = sdk.read::<u64>(sdk.base + cached);
-        if sdk.is_valid_ptr(dm) { return Some(dm); }
-    }
-    let hard = off_entry_fake_dm_intel();
-    let dm = sdk.read::<u64>(sdk.base + hard);
-    if validate_dm(sdk, dm) {
-        DISCOVERED_ENTRY.store(hard, Ordering::Relaxed);
-        return Some(dm);
-    }
-    if !DISCOVERY_ATTEMPTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        if let Some(off) = discover_entry_offset(sdk) {
-            DISCOVERED_ENTRY.store(off, Ordering::Relaxed);
-            let dm = sdk.read::<u64>(sdk.base + off);
-            if sdk.is_valid_ptr(dm) { return Some(dm); }
-        }
-    }
-    None
+    let fdm = sdk.read::<u64>(sdk.base + off_entry_fake_dm_intel());
+    if !sdk.is_valid_ptr(fdm) { return None; }
+    let dm = sdk.read::<u64>(fdm + off_fdm_datamodel());
+    if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
 }
 
 #[inline(never)]

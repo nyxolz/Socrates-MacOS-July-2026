@@ -113,6 +113,22 @@
                 min={50} max={5000} step={10} format={(v) => v.toFixed(0) + " s"} />
         </Section>
 
+        <Section title="Radar" icon="compass" active={$visuals.radar}>
+            <Toggle bind:checked={$visuals.radar} label="Radar" />
+            <Slider label="Size" bind:value={$visuals.radar_size}
+                min={100} max={320} step={5} format={(v) => v.toFixed(0) + " px"} />
+            <Slider label="Range" bind:value={$visuals.radar_range}
+                min={50} max={1000} step={10} format={(v) => v.toFixed(0) + " s"} />
+            <div class="row">
+                <span class="lbl">Enemy</span>
+                <ColorPicker bind:value={$visuals.radar_enemy_color} />
+            </div>
+            <div class="row">
+                <span class="lbl">Ally</span>
+                <ColorPicker bind:value={$visuals.radar_ally_color} />
+            </div>
+        </Section>
+
         <Section title="Global" icon="sliders">
             <Toggle bind:checked={$visuals.outline} label="Black outline" />
         </Section>
@@ -135,6 +151,7 @@
     .col { display: flex; flex-direction: column; min-width: 0; }
     .row { display: flex; align-items: center; gap: 8px; }
     .row :global(.toggle) { flex: 1; }
+    .lbl { flex: 1; font-size: 11px; color: var(--text); }
     .hint {
         margin: 6px 0 0 0;
         font-size: 9px;
