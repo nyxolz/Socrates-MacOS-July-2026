@@ -3,6 +3,8 @@
     import { listen, type UnlistenFn } from "@tauri-apps/api/event";
     import { invoke } from "@tauri-apps/api/core";
     import Menu from "$lib/menu/Menu.svelte";
+    import Toasts from "$lib/menu/Toasts.svelte";
+    import BindsHud from "$lib/menu/BindsHud.svelte";
     import { visuals, aimbot, menuOptions, theme, type VisualsCfg, type AimbotCfg, type MenuOptionsCfg } from "$lib/menu/stores";
     import { getAvatar } from "$lib/menu/avatar";
 
@@ -565,6 +567,8 @@
 <canvas bind:this={canvas} class="overlay"></canvas>
 
 <Menu />
+<BindsHud />
+<Toasts />
 
 <style>
     .overlay {

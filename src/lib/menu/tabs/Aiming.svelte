@@ -33,8 +33,12 @@
                 <Toggle bind:checked={$aimbot.fill_fov} label="Fill FOV" />
                 <ColorPicker bind:value={$aimbot.fov_fill_color} title="Fill colour" />
             </div>
-            <Slider label="Smoothing" bind:value={$aimbot.smoothing}
+            <Slider label="Smoothness" bind:value={$aimbot.smoothing}
                 min={0.01} max={1} step={0.01} format={(v) => v.toFixed(2)} />
+            {#if $aimbot.aim_type === "Silent Aim"}
+                <Slider label="Miss rate" bind:value={$aimbot.silent_miss_rate}
+                    min={0} max={1} step={0.01} format={(v) => (v * 100).toFixed(0) + "%"} />
+            {/if}
             <Toggle bind:checked={$aimbot.fov_scale_smoothing} label="FOV-scaled smoothing" />
             <Slider label="Max speed" bind:value={$aimbot.max_speed}
                 min={0} max={200} step={1}
@@ -51,15 +55,6 @@
                 min={0} max={200} step={1} />
         </Section>
 
-        <Section title="Trigger" icon="mouse" active={$aimbot.trigger_enabled}>
-            <div class="row">
-                <Toggle bind:checked={$aimbot.trigger_enabled} label="Auto trigger" />
-                <KeybindInput inline bind:value={$aimbot.trigger_keybind} />
-            </div>
-            <Slider label="Delay" bind:value={$aimbot.trigger_delay}
-                min={0} max={500} step={1} format={(v) => v.toFixed(0) + " ms"} />
-            <Toggle bind:checked={$aimbot.trigger_burst} label="Burst mode" />
-        </Section>
     </div>
 
     <div class="col">
@@ -75,8 +70,6 @@
 
         <Section title="Legit" icon="shield" active={$aimbot.legit_enabled}>
             <Toggle bind:checked={$aimbot.legit_enabled} label="Legit mode" />
-            <Slider label="Miss rate" bind:value={$aimbot.legit_miss}
-                min={0} max={0.9} step={0.01} format={(v) => (v * 100).toFixed(0) + "%"} />
             <Slider label="Reaction time" bind:value={$aimbot.reaction_time}
                 min={0} max={500} step={5} format={(v) => v.toFixed(0) + " ms"} />
             <Toggle bind:checked={$aimbot.humanize} label="Humanize aim" />
@@ -85,11 +78,6 @@
             <Toggle bind:checked={$aimbot.smooth_path} label="Smooth path" />
         </Section>
 
-        <Section title="Target lock" icon="target" active={$aimbot.sticky_aim}>
-            <Toggle bind:checked={$aimbot.sticky_aim} label="Sticky aim" />
-            <Slider label="Switch delay" bind:value={$aimbot.target_switch_delay}
-                min={0} max={1000} step={10} format={(v) => v.toFixed(0) + " ms"} />
-        </Section>
     </div>
 </div>
 

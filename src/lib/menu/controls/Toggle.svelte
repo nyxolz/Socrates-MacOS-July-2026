@@ -1,11 +1,21 @@
 <script lang="ts">
+    import { toast } from "../toast";
+
     export let label: string;
     export let checked: boolean = false;
     export let hint: string | undefined = undefined;
+
+    // Fire a transient notification only on user-driven toggles (the DOM
+    // `change` event doesn't fire for programmatic store updates, so loading a
+    // config won't spam toasts).
+    function onChange(e: Event) {
+        const on = (e.currentTarget as HTMLInputElement).checked;
+        toast(`${label}: ${on ? "ON" : "OFF"}`);
+    }
 </script>
 
 <label class="toggle">
-    <input type="checkbox" bind:checked />
+    <input type="checkbox" bind:checked on:change={onChange} />
     <span class="box" class:on={checked}></span>
     <span class="label">{label}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}

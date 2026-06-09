@@ -169,9 +169,9 @@ fn norm3(v: [f32; 3]) -> Option<[f32; 3]> {
 /// look-at + matrix-write logic without duplicating it.
 pub fn aim_camera_pub(
     sdk: &SdkI, camera_ptr: u64, cam_pos: [f32; 3], target: [f32; 3],
-    smoothing: f32, current: [[f32; 3]; 3],
+    lerp_factor: f32, current: [[f32; 3]; 3],
 ) {
-    aim_camera(sdk, camera_ptr, cam_pos, target, smoothing, current);
+    aim_camera(sdk, camera_ptr, cam_pos, target, lerp_factor, current);
 }
 
 fn aim_camera(
@@ -179,7 +179,7 @@ fn aim_camera(
     camera_ptr: u64,
     cam_pos: [f32; 3],
     target: [f32; 3],
-    smoothing: f32,
+    lerp_factor: f32,
     current: [[f32; 3]; 3],
 ) {
     let forward = match norm3(sub3(target, cam_pos)) {
@@ -200,9 +200,9 @@ fn aim_camera(
         [right[2], up[2], -forward[2]],
     ];
 
-    // smoothing slider semantics: 0 = no smoothing (snap), 1 = max smoothing
-    // (slow lerp). Convert to lerp factor by inverting.
-    let s = (1.0 - smoothing.clamp(0.0, 0.99)).max(0.01);
+    // `lerp_factor` is already this tick's interpolation amount (0 = no move,
+    // 1 = snap straight to target). Computed time-based by the caller.
+    let s = lerp_factor.clamp(0.0, 1.0);
     let mut new_m = [[0.0_f32; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -256,16 +256,18 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
         // Per-character last (pos, time) for velocity prediction.
         let mut prev: HashMap<u64, ([f32; 3], Instant)> = HashMap::new();
         let mut last_shot = Instant::now() - Duration::from_secs(10);
+        // Last tick time, for framerate-independent (time-based) smoothing.
+        let mut last_aim_t = Instant::now();
         let mut burst_left: u32 = 0;
         let mut rng: u32 = 0x12345678;
 
         // ── Legit / humanizer persistent state ──────────────────────────
         // When the aim key was first held (reaction-time gate). None = not held.
         let mut aim_press_started: Option<Instant> = None;
-        // Currently locked target (char_addr) + when we locked it (sticky aim
-        // + target-switch delay).
+        // Currently locked target (char_addr). With sticky aim it's set when
+        // the aimbot engages and cleared on key release — a hard lock for the
+        // whole activation, so it never switches to another player.
         let mut locked_target: Option<u64> = None;
-        let mut locked_since = Instant::now();
         // Low-pass-filtered jitter offset — the humanizer wanders smoothly
         // toward fresh random goals instead of teleporting (white noise).
         let mut jitter = [0.0f32, 0.0f32];
@@ -354,6 +356,9 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
 
             let caches = state.char_caches.lock().unwrap().clone();
             let relations = state.player_relations.lock().unwrap().clone();
+            // Team check: characters sharing the local player's parent container
+            // are treated as allies and never targeted.
+            let local_parent = state.local_parent.load(std::sync::atomic::Ordering::Relaxed);
             let cx_center = win_x + win_w * 0.5;
             let cy_center = win_y + TITLEBAR_HEIGHT as f64 + render_h * 0.5;
             // In Mouse mode the user aims by moving the cursor — the FOV
@@ -368,6 +373,11 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                     .unwrap_or((cx_center, cy_center))
             };
             let now = Instant::now();
+            // Real elapsed time since the previous tick — drives time-based
+            // smoothing so the aim speed doesn't depend on the (uncapped) loop
+            // rate. Clamped to avoid a huge jump after a pause.
+            let dt = now.duration_since(last_aim_t).as_secs_f32().clamp(0.0001, 0.1);
+            last_aim_t = now;
             let fov_sq = (cfg.fov_radius as f64).powi(2);
 
             // best = (score, screen_x, screen_y, screen_distance, world_target, char_addr)
@@ -378,8 +388,12 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
 
             for cache in caches.iter() {
                 // Only enemies (relation 0) are targetable. Allies (1) and
-                // neutrals (2) are skipped entirely.
-                if relations.get(&cache.name).copied().unwrap_or(0) != 0 { continue; }
+                // neutrals (2) are skipped entirely. With Team check on,
+                // same-parent players resolve to ally and are skipped here.
+                let manual = relations.get(&cache.name).copied().unwrap_or(0);
+                let relation = crate::players::effective_relation(
+                    manual, cfg.team_check, cache.parent_addr, local_parent);
+                if relation != 0 { continue; }
                 let slot = part_slot(&cfg.part, cache.rig_type).min(cache.parts.len() - 1);
                 let (prim, valid) = cache.parts[slot];
                 if !valid { continue; }
@@ -450,33 +464,20 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                 }
             }
 
-            // ── Sticky aim / target-switch delay ────────────────────────
-            // Default: track whatever scored best. Sticky aim keeps the locked
-            // target as long as it stays valid + in-FOV; we only allow a switch
-            // once `target_switch_delay` ms have elapsed since the last lock.
-            let chosen = if cfg.sticky_aim {
-                match (locked_cand, best) {
-                    (Some(lc), Some(b)) => {
-                        let held = locked_since.elapsed().as_millis() as f32;
-                        if b.5 != lc.5 && held >= cfg.target_switch_delay {
-                            locked_target = Some(b.5);
-                            locked_since = now;
-                            Some(b)
-                        } else {
-                            Some(lc) // keep locked target
-                        }
-                    }
-                    // Locked target gone → acquire the new best.
-                    (None, Some(b)) => {
-                        locked_target = Some(b.5);
-                        locked_since = now;
-                        Some(b)
-                    }
-                    _ => None,
+            // ── Force lock (always on — built into Socrate's aimbot) ────
+            // The target is chosen when the aimbot first engages
+            // (locked_target was None) and is kept for the WHOLE activation —
+            // `locked_target` is cleared only on key release above. While
+            // locked we ONLY aim that player: another player passing by or
+            // entering the FOV is never focused. If the locked target is
+            // momentarily not a valid candidate (out of FOV / occluded) we
+            // simply don't aim, instead of switching to someone else.
+            let chosen = match locked_target {
+                Some(_) => locked_cand,
+                None => {
+                    if let Some(b) = best { locked_target = Some(b.5); }
+                    best
                 }
-            } else {
-                if let Some(b) = best { locked_target = Some(b.5); }
-                best
             };
 
             // Aim — Mouse warps the OS cursor; Camera writes the orientation
@@ -491,18 +492,37 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                     // Smoothing for this tick — softened at the FOV edge when enabled.
                     let eff_smooth =
                         effective_smoothing(cfg.smoothing, scr_d, cfg.fov_radius, cfg.fov_scale_smoothing);
+                    // Framerate-independent smoothing: map the slider to a time
+                    // constant `tau` (higher smoothness → larger tau → slower,
+                    // weaker aim) and turn it into this tick's interpolation
+                    // factor via an exponential. 0 → near-instant snap, 1 → very
+                    // weak. This is what makes "max smoothness" actually weak —
+                    // a plain per-tick fraction would always snap on the
+                    // uncapped loop.
+                    let tau = lerp(0.01, 0.6, eff_smooth as f64) as f32;
+                    let alpha = (1.0 - (-dt / tau).exp()).clamp(0.0, 1.0);
                     if !miss {
                         match cfg.aim_type.as_str() {
                             "Camera" => {
-                                aim_camera(&sdk, camera, cam_pos, tp, eff_smooth, m);
+                                aim_camera(&sdk, camera, cam_pos, tp, alpha, m);
                             }
                             "Silent Aim" => {
                                 // Coordonnées de la cible dans la fenêtre de rendu (sans la barre de titre).
                                 // Clampées dans [1, taille] : une cible au bord donnait un viewport
                                 // négatif/nul -> le rayon de tir partait n'importe où (ratés).
-                                let target_x = ((sx - win_x) as f32).clamp(1.0, win_w as f32);
-                                let target_y = ((sy - win_y - TITLEBAR_HEIGHT as f64) as f32)
+                                let mut target_x = ((sx - win_x) as f32).clamp(1.0, win_w as f32);
+                                let mut target_y = ((sy - win_y - TITLEBAR_HEIGHT as f64) as f32)
                                     .clamp(1.0, render_h as f32);
+
+                                // Miss volontaire : avec une probabilité `silent_miss_rate`,
+                                // on décale la cible de 120-280 px dans une direction aléatoire
+                                // pour que le rayon de tir parte à côté exprès.
+                                if cfg.silent_miss_rate > 0.0 && rand(&mut rng) < cfg.silent_miss_rate {
+                                    let ang = rand(&mut rng) * std::f32::consts::TAU;
+                                    let mag = 120.0 + rand(&mut rng) * 160.0;
+                                    target_x = (target_x + ang.cos() * mag).clamp(1.0, win_w as f32);
+                                    target_y = (target_y + ang.sin() * mag).clamp(1.0, render_h as f32);
+                                }
 
                                 // Pour que le centre du viewport tombe exactement sur la cible,
                                 // on définit sa taille comme 2 * (coordonnées de la cible).
@@ -525,7 +545,7 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                                 if let Some(cur) = current_cursor() {
                                     let raw_dx = sx - cur.x;
                                     let raw_dy = sy - cur.y;
-                                    let mut step = (1.0 - eff_smooth as f64).max(0.01);
+                                    let mut step = alpha as f64;
                                     // smooth_path: ease-out — decelerate as the
                                     // cursor closes the last ~80 px on the target
                                     // so the lock settles instead of snapping.

@@ -42,6 +42,7 @@ pub fn set_interactive_zones(state: State<AppState>, zones: Vec<ZoneInput>) {
 
 #[tauri::command]
 pub fn panic_exit() {
+    crate::telemetry::mark_stopped();
     std::process::exit(0);
 }
 
@@ -175,16 +176,24 @@ pub fn list_players(state: State<AppState>) -> Vec<PlayerEntry> {
     let sdk = state.sdk.lock().unwrap().clone();
     let sdk = match sdk { Some(s) => s, None => return vec![] };
 
-    let camera_pos = state.aimbot_cfg.lock().unwrap();
-    drop(camera_pos);
     // Compute distance from a fresh camera read — same chain as elsewhere.
     let cam_pos = resolve_cam_pos(&sdk).unwrap_or([0.0; 3]);
 
     let caches = state.char_caches.lock().unwrap().clone();
     let relations = state.player_relations.lock().unwrap().clone();
+    let local_name = state.local_player_name.lock().unwrap().clone();
+    // Team check (aimbot toggle): same-parent players show as ally in the list.
+    let team_check = state.aimbot_cfg.lock().unwrap().team_check;
+    let local_parent = state.local_parent.load(std::sync::atomic::Ordering::Relaxed);
     let mut list: Vec<PlayerEntry> = caches.iter().filter_map(|c| {
-        let (prim, valid) = c.parts[0];
-        if !valid { return None; }
+        // Exclude the local player (first registered in Players) from the list.
+        if !local_name.is_empty() && c.name == local_name { return None; }
+        // Use the first VALID part, not strictly parts[0] (the Head). Custom
+        // rigs — e.g. a character that only owns a HumanoidRootPart and no Head
+        // child — leave parts[0] empty, which would drop them from the list even
+        // though ESP/radar still track them (they fall back to any valid part).
+        let prim = c.parts.iter().find_map(|(p, v)| if *v { Some(*p) } else { None });
+        let prim = match prim { Some(p) => p, None => return None };
         let pos = crate::players::read_pos_fast(&sdk, prim);
         if !pos[0].is_finite() { return None; }
         if pos[0] == 0.0 && pos[1] == 0.0 && pos[2] == 0.0 { return None; }
@@ -202,7 +211,9 @@ pub fn list_players(state: State<AppState>) -> Vec<PlayerEntry> {
             name: c.name.clone(),
             distance,
             health,
-            relation: relations.get(&c.name).copied().unwrap_or(0),
+            relation: crate::players::effective_relation(
+                relations.get(&c.name).copied().unwrap_or(0),
+                team_check, c.parent_addr, local_parent),
         })
     }).collect();
     list.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));

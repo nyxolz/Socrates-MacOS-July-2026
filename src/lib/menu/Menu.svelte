@@ -4,6 +4,7 @@
     import { activeTab, theme, menuOptions, localVersion, remoteVersion, lastVersionCheck, updateAvailable } from "./stores";
     import { get } from "svelte/store";
     import { startConfigBridge } from "./bridge";
+    import { setZone } from "./zones";
     import TabBar from "./TabBar.svelte";
     import Aiming from "./tabs/Aiming.svelte";
     import Visuals from "./tabs/Visuals.svelte";
@@ -74,18 +75,16 @@
         // interactive zone; no explicit pushZone() needed here.
     }
 
-    async function pushZone() {
+    function pushZone() {
         if (!menuEl || !$menuOptions.menu_visible) {
-            // Clear the click-through zone so the overlay stops eating
-            // clicks behind the (hidden) menu.
-            await invoke("set_interactive_zones", { zones: [] }).catch(() => {});
+            // Clear our click-through zone so the overlay stops eating clicks
+            // behind the (hidden) menu. Other windows keep their own zones.
+            setZone("menu", null);
             return;
         }
         const r = menuEl.getBoundingClientRect();
         menuH = r.height;
-        await invoke("set_interactive_zones", {
-            zones: [{ x: r.left, y: r.top, w: r.width, h: r.height }],
-        });
+        setZone("menu", { x: r.left, y: r.top, w: r.width, h: r.height });
     }
 
     // Re-push (or clear) the zone whenever visibility flips.

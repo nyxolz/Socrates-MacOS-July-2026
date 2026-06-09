@@ -93,6 +93,9 @@ pub struct CharCache {
     /// head's LookVector can pivot independently and gives wrong results.
     /// 0 if HRP wasn't found.
     pub hrp_primitive: u64,
+    /// Parent container (instance addr) this character is parented to. Used by
+    /// Team check to compare against the local player's parent container.
+    pub parent_addr: u64,
     pub last_validated: Instant,
 }
 
@@ -313,6 +316,7 @@ pub fn build_char_cache(sdk: &SdkI, char_addr: u64, humanoid_addr: u64) -> Optio
         rig_type: best_rig,
         humanoid_addr,
         hrp_primitive,
+        parent_addr: sdk.read::<u64>(char_addr + Instance::Parent as u64),
         last_validated: Instant::now(),
     })
 }
@@ -379,7 +383,7 @@ fn character_marker(
 ///
 /// Bounded by depth / per-node / total-node caps so a huge Workspace can't
 /// stall the cache thread.
-pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec<CharCache>, Vec<u64>) {
+pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec<CharCache>, Vec<u64>, u64) {
     const MAX_DEPTH: u32 = 8;
     const MAX_TOTAL_NODES: usize = 6000;
 
@@ -389,6 +393,8 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
 
     let mut caches = Vec::new();
     let mut containers: Vec<u64> = Vec::new();
+    // Parent container holding the local player's character (for Team check).
+    let mut local_parent: u64 = 0;
     let mut total = 0usize;
     // Iterative BFS over `(node, depth)`: shallow levels first.
     let mut queue: VecDeque<(u64, u32)> = VecDeque::new();
@@ -406,7 +412,11 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
                     // Remember the parent path even if the only character here is
                     // ourselves — it's still where players will appear.
                     if !containers.contains(&node) { containers.push(node); }
-                    if local_name.is_empty() || cname != local_name {
+                    if !local_name.is_empty() && cname == local_name {
+                        // Found ourselves — remember our parent container so
+                        // Team check can flag same-parent characters as allies.
+                        local_parent = node;
+                    } else if local_name.is_empty() || cname != local_name {
                         if let Some(cache) = build_char_cache(sdk, c, humanoid) {
                             caches.push(cache);
                         }
@@ -422,7 +432,18 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
             }
         }
     }
-    (caches, containers)
+    (caches, containers, local_parent)
+}
+
+/// Team-check relation resolver. When `team_check` is on, any character sharing
+/// the local player's parent container is treated as an ally (1); otherwise the
+/// manually-set `manual` relation is returned unchanged (0 = enemy default).
+pub fn effective_relation(manual: u8, team_check: bool, cache_parent: u64, local_parent: u64) -> u8 {
+    if team_check && local_parent != 0 && cache_parent == local_parent {
+        1
+    } else {
+        manual
+    }
 }
 
 /// Cheap rescan of already-known parent containers: only their direct children
@@ -516,8 +537,11 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
                     // newly-added containers are still discovered.
                     let refresh_due = last_full_walk.elapsed() >= Duration::from_secs(4);
                     if caches.is_empty() || refresh_due {
-                        let (full, containers) = discover_characters(&sdk, workspace, &local_name);
+                        let (full, containers, local_parent) = discover_characters(&sdk, workspace, &local_name);
                         last_full_walk = Instant::now();
+                        if local_parent != 0 {
+                            state.local_parent.store(local_parent, std::sync::atomic::Ordering::Relaxed);
+                        }
                         if !containers.is_empty() { known_containers = containers; }
                         // Keep whichever found more (refresh may run while the
                         // cheap path already had results).
@@ -534,6 +558,10 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
                         let prev = state.char_caches.lock().unwrap().clone();
                         for old in prev.iter() {
                             if caches.iter().any(|c| c.char_addr == old.char_addr) { continue; }
+                            // Never resurrect the local player: an early tick (before
+                            // `local_name` resolved) may have captured ourselves, and
+                            // the sticky-merge would otherwise keep us alive forever.
+                            if !local_name.is_empty() && old.name == local_name { continue; }
                             if !sdk.is_valid_ptr(old.char_addr) || !sdk.is_valid_ptr(old.humanoid_addr) { continue; }
                             // Validation STRUCTURELLE (pas de timer) : on garde le
                             // joueur EN CONTINU tant qu'il est réellement vivant ->

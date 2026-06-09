@@ -2,7 +2,14 @@
     import { invoke } from "@tauri-apps/api/core";
     import Section from "../controls/Section.svelte";
     import Button from "../controls/Button.svelte";
-    import { exportCurrentConfig, applyImportedConfig } from "../stores";
+    import { exportCurrentConfig, applyImportedConfig, resetToDefaults } from "../stores";
+    import { toast } from "../toast";
+
+    function doReset() {
+        resetToDefaults();
+        status = "reset to defaults";
+        toast("Reset to default");
+    }
 
     let name = "socrate-config";
     let status = "";
@@ -16,8 +23,10 @@
             const parsed = JSON.parse(text);
             const r = applyImportedConfig(parsed);
             status = r.ok ? "config applied" : `import failed: ${r.reason ?? "unknown"}`;
+            toast(r.ok ? "Config loaded" : "Config load failed");
         } catch (err) {
             status = `import failed: ${err}`;
+            toast("Config load failed");
         }
     }
 
@@ -27,6 +36,7 @@
         try {
             navigator.clipboard?.writeText(content);
             status = "current config copied to clipboard";
+            toast("Config copied");
         } catch {
             status = "current config loaded below — select & copy";
         }
@@ -41,8 +51,10 @@
                 content,
             });
             status = `saved → ${path}`;
+            toast("Config exported");
         } catch (e) {
             status = `export failed: ${e}`;
+            toast("Export failed");
         }
     }
 
@@ -59,8 +71,10 @@
             const parsed = JSON.parse(text);
             const r = applyImportedConfig(parsed);
             status = r.ok ? `imported ${f.name}` : `import failed: ${r.reason ?? "unknown"}`;
+            toast(r.ok ? `Config loaded: ${f.name}` : "Config load failed");
         } catch (err) {
             status = `import failed: ${err}`;
+            toast("Config load failed");
         } finally {
             target.value = "";
         }
@@ -89,6 +103,10 @@
                 on:change={onFile}
             />
             <div class="hint">Replaces aimbot, visuals, menu options and theme with the file contents.</div>
+        </Section>
+        <Section title="Reset" icon="terminal" active={false}>
+            <Button label="Reset to Default" onclick={doReset} />
+            <div class="hint">Restores aimbot, visuals, menu options and theme to factory defaults.</div>
         </Section>
     </div>
     <div class="col wide">

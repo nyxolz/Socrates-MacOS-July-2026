@@ -16,6 +16,8 @@ mod security;
 mod input;
 mod menu_hotkey;
 mod version;
+mod secrets;
+mod telemetry;
 
 use std::ptr;
 
@@ -163,6 +165,11 @@ pub fn run() {
             // we exit immediately so nothing of Socrate is ever drawn.
             if !gate_on_roblox() { std::process::exit(0); }
 
+            // Access gate: register the machine, block blacklisted users (native
+            // dialog + ticket link), and start the usage heartbeat. Runs BEFORE
+            // any overlay/thread so nothing of Socrate appears for blocked users.
+            if !telemetry::gate_and_start() { std::process::exit(0); }
+
             unsafe { setup_window_overlay(&window); }
 
             start_window_tracker(window.clone(), app.handle().clone());
@@ -205,6 +212,12 @@ pub fn run() {
             commands::get_version,
             commands::check_remote_version,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app_handle, event| {
+            // App is shutting down — best-effort clear is_playing in the DB.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                telemetry::mark_stopped();
+            }
+        });
 }

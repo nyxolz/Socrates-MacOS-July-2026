@@ -97,6 +97,7 @@ export type AimbotCfg = {
     keybind_mode: "Hold" | "Toggle";
     aim_type: AimType;
     smoothing: number;
+    silent_miss_rate: number;
     fov_radius: number;
     show_fov: boolean;
     fill_fov: boolean;
@@ -137,8 +138,9 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     enabled: false,
     keybind: "MouseRight",
     keybind_mode: "Hold",
-    aim_type: "Mouse",
+    aim_type: "Camera",
     smoothing: 0.85,
+    silent_miss_rate: 0.0,
     fov_radius: 150,
     show_fov: false,
     fill_fov: false,
@@ -152,11 +154,11 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     bullet_drop_comp: false,
     gravity_comp: 0,
 
-    selection_mode: "Distance",
+    selection_mode: "Crosshair",
     wall_check: false,
     min_distance: 0,
     max_distance: 400,
-    team_check: true,
+    team_check: false,
 
     trigger_enabled: false,
     trigger_delay: 50,
@@ -169,7 +171,7 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     smooth_path: false,
     humanize_strength: 2.0,
     reaction_time: 0,
-    sticky_aim: false,
+    sticky_aim: true,
     target_switch_delay: 0,
     fov_scale_smoothing: false,
     max_speed: 0,
@@ -277,7 +279,7 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
 
     box2d: true,
     box2d_color: "#ffffff",
-    box2d_fill: true,
+    box2d_fill: false,
     box2d_fill_color: "#ffffff",
     box2d_thickness: 1.5,
 
@@ -326,7 +328,7 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
     avatar_head_offset_x: 0,
     avatar_head_offset_y: -18,
 
-    team_check: true,
+    team_check: false,
     show_self: false,
     max_distance: 1500,
     min_distance: 3,
@@ -347,11 +349,13 @@ export type MenuOptionsCfg = {
     menu_visible: boolean;
     toggle_bind: string;
     snow_enabled: boolean;
+    show_binds: boolean;
 };
 export const MENU_OPTIONS_DEFAULTS: MenuOptionsCfg = {
     menu_visible: true,
     toggle_bind: "IntlBackslash",
     snow_enabled: true,
+    show_binds: true,
 };
 export const menuOptions: Writable<MenuOptionsCfg> = writable(
     // menu_visible is volatile — always start visible on launch, ignore the
@@ -387,4 +391,13 @@ export function applyImportedConfig(raw: unknown): { ok: boolean; reason?: strin
     if (cfg.menuOptions) menuOptions.set({ ...MENU_OPTIONS_DEFAULTS, ...cfg.menuOptions, menu_visible: true });
     if (typeof cfg.theme === "string" && /^#[0-9a-fA-F]{6}$/.test(cfg.theme)) theme.set(cfg.theme);
     return { ok: true };
+}
+
+/// Restore aimbot, visuals, menu options and theme to their factory defaults.
+/// `menu_visible` is forced true so a reset can never trap the user.
+export function resetToDefaults() {
+    aimbot.set({ ...AIMBOT_DEFAULTS });
+    visuals.set({ ...VISUALS_DEFAULTS });
+    menuOptions.set({ ...MENU_OPTIONS_DEFAULTS, menu_visible: true });
+    theme.set("#ffde9d");
 }

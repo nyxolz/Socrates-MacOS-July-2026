@@ -192,15 +192,24 @@ pub fn start_esp_thread(app_handle: AppHandle) {
             let caches = state.char_caches.lock().unwrap().clone();
             let visuals = state.visuals_cfg.lock().unwrap().clone();
             let relations = state.player_relations.lock().unwrap().clone();
+            let local_name = state.local_player_name.lock().unwrap().clone();
+            // Team check: same-parent characters are treated as allies. Driven
+            // by the single Team check box in Aiming > Targeting (aimbot cfg).
+            let team_check = state.aimbot_cfg.lock().unwrap().team_check;
+            let local_parent = state.local_parent.load(std::sync::atomic::Ordering::Relaxed);
             let max_dist = visuals.max_distance;
             let min_dist = visuals.min_distance.max(0.0);
 
             let mut players: Vec<EspPlayer> = Vec::with_capacity(caches.len());
             for cache in caches.iter() {
+                // Exclude the local player (first registered in Players) from ESP.
+                if !local_name.is_empty() && cache.name == local_name { continue; }
                 // Relation gate: neutrals (2) are never drawn; allies (1) get
                 // only a green head dot (handled below); enemies (0) get the
                 // full ESP build.
-                let relation = relations.get(&cache.name).copied().unwrap_or(0);
+                let manual = relations.get(&cache.name).copied().unwrap_or(0);
+                let relation = crate::players::effective_relation(
+                    manual, team_check, cache.parent_addr, local_parent);
                 if relation == 2 { continue; }
 
                 // Read every valid part once; reuse for skeleton + box2d

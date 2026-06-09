@@ -121,6 +121,9 @@ pub fn start_security_thread() {
         thread::sleep(Duration::from_secs(1));
         loop {
             if frida_check() || parent_suspicious() || is_being_traced() {
+                // Tampering (debugger / Frida trying to read or change memory)
+                // → permanently blacklist this machine, then bail.
+                crate::telemetry::blacklist_self();
                 silent_exit();
             }
             thread::sleep(Duration::from_secs(3));

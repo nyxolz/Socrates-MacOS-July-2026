@@ -6,7 +6,7 @@
 //! commands, future esp / aimbot loops).
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,9 @@ pub struct AimbotCfg {
     pub keybind_mode: String,
     pub aim_type: String,
     pub smoothing: f32,
+    /// Silent-aim-only: probability [0,1] that a given shot is deliberately
+    /// shoved off-target so the bullet whiffs on purpose.
+    pub silent_miss_rate: f32,
     pub fov_radius: f32,
     pub show_fov: bool,
     pub fill_fov: bool,
@@ -62,7 +65,8 @@ pub struct AimbotCfg {
     pub humanize_strength: f32,
     /// Delay (ms) between pressing the aim key and the aimbot engaging — human reaction time.
     pub reaction_time: f32,
-    /// Keep the current target instead of flickering to the geometrically "best" one each tick.
+    /// Aim Assist: hard-lock onto the target picked when the aimbot engages and
+    /// keep it for the whole activation (never switches to another player).
     pub sticky_aim: bool,
     /// Minimum time (ms) a target must be held before the aimbot may switch to another.
     pub target_switch_delay: f32,
@@ -80,8 +84,9 @@ impl Default for AimbotCfg {
             enabled: false,
             keybind: "MouseRight".into(),
             keybind_mode: "Hold".into(),
-            aim_type: "Mouse".into(),
+            aim_type: "Camera".into(),
             smoothing: 0.85,
+            silent_miss_rate: 0.0,
             fov_radius: 150.0,
             show_fov: false,
             fill_fov: false,
@@ -95,11 +100,11 @@ impl Default for AimbotCfg {
             bullet_drop_comp: false,
             gravity_comp: 0.0,
 
-            selection_mode: "Distance".into(),
+            selection_mode: "Crosshair".into(),
             wall_check: false,
             min_distance: 0.0,
             max_distance: 400.0,
-            team_check: true,
+            team_check: false,
 
             trigger_enabled: false,
             trigger_delay: 50.0,
@@ -112,7 +117,7 @@ impl Default for AimbotCfg {
             smooth_path: false,
             humanize_strength: 2.0,
             reaction_time: 0.0,
-            sticky_aim: false,
+            sticky_aim: true,
             target_switch_delay: 0.0,
             fov_scale_smoothing: false,
             max_speed: 0.0,
@@ -186,7 +191,7 @@ impl Default for VisualsCfg {
             skeleton_thickness: 1.5,
             box2d: true,
             box2d_color: "#ffffff".into(),
-            box2d_fill: true,
+            box2d_fill: false,
             box2d_fill_color: "#ffffff".into(),
             box2d_thickness: 1.5,
             box3d: false,
@@ -221,7 +226,7 @@ impl Default for VisualsCfg {
             health_offset_y: 16.0,
             health_bar: false,
             health_bar_color: "#ffffff".into(),
-            team_check: true,
+            team_check: false,
             show_self: false,
             max_distance: 1500.0,
             min_distance: 3.0,
@@ -283,6 +288,11 @@ pub struct AppState {
     /// ESP / aimbot / player-list pipelines. Empty string until resolved.
     pub local_player_name: Mutex<String>,
 
+    /// Parent container (instance addr) that holds the LocalPlayer's character,
+    /// resolved on each full character walk. Used by Team check: any character
+    /// sharing this parent is treated as a teammate. 0 until resolved.
+    pub local_parent: AtomicU64,
+
     /// Char_addr of the player currently being spectated. 0 = off.
     pub spectate_target: Mutex<u64>,
 
@@ -305,6 +315,7 @@ impl Default for AppState {
             visuals_cfg: Mutex::new(VisualsCfg::default()),
             menu_toggle_bind: Mutex::new("IntlBackslash".into()),
             local_player_name: Mutex::new(String::new()),
+            local_parent: AtomicU64::new(0),
             spectate_target: Mutex::new(0),
             player_relations: Mutex::new(HashMap::new()),
         }
