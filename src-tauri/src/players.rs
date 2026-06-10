@@ -383,7 +383,7 @@ fn character_marker(
 ///
 /// Bounded by depth / per-node / total-node caps so a huge Workspace can't
 /// stall the cache thread.
-pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec<CharCache>, Vec<u64>, u64) {
+pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec<CharCache>, Vec<u64>, u64, u64) {
     const MAX_DEPTH: u32 = 8;
     const MAX_TOTAL_NODES: usize = 6000;
 
@@ -395,6 +395,8 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
     let mut containers: Vec<u64> = Vec::new();
     // Parent container holding the local player's character (for Team check).
     let mut local_parent: u64 = 0;
+    // Humanoid instance addr of our own character (for the Misc tab).
+    let mut local_humanoid: u64 = 0;
     let mut total = 0usize;
     // Iterative BFS over `(node, depth)`: shallow levels first.
     let mut queue: VecDeque<(u64, u32)> = VecDeque::new();
@@ -414,8 +416,10 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
                     if !containers.contains(&node) { containers.push(node); }
                     if !local_name.is_empty() && cname == local_name {
                         // Found ourselves — remember our parent container so
-                        // Team check can flag same-parent characters as allies.
+                        // Team check can flag same-parent characters as allies,
+                        // and our Humanoid addr for the Misc tab.
                         local_parent = node;
+                        local_humanoid = humanoid;
                     } else if local_name.is_empty() || cname != local_name {
                         if let Some(cache) = build_char_cache(sdk, c, humanoid) {
                             caches.push(cache);
@@ -432,7 +436,7 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
             }
         }
     }
-    (caches, containers, local_parent)
+    (caches, containers, local_parent, local_humanoid)
 }
 
 /// Team-check relation resolver. When `team_check` is on, any character sharing
@@ -537,10 +541,15 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
                     // newly-added containers are still discovered.
                     let refresh_due = last_full_walk.elapsed() >= Duration::from_secs(4);
                     if caches.is_empty() || refresh_due {
-                        let (full, containers, local_parent) = discover_characters(&sdk, workspace, &local_name);
+                        let (full, containers, local_parent, local_humanoid) = discover_characters(&sdk, workspace, &local_name);
                         last_full_walk = Instant::now();
                         if local_parent != 0 {
                             state.local_parent.store(local_parent, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        if local_humanoid != 0 {
+                            state.local_humanoid_addr.store(local_humanoid, std::sync::atomic::Ordering::Relaxed);
+                        } else if !sdk.is_valid_ptr(state.local_humanoid_addr.load(std::sync::atomic::Ordering::Relaxed)) {
+                            state.local_humanoid_addr.store(0, std::sync::atomic::Ordering::Relaxed);
                         }
                         if !containers.is_empty() { known_containers = containers; }
                         // Keep whichever found more (refresh may run while the
@@ -593,4 +602,35 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
 
 fn resolve_workspace(sdk: &SdkI) -> Option<u64> {
     crate::security::resolve_workspace(sdk)
+}
+
+/// Misc tab — continuously re-applies the enabled overrides
+/// (WalkSpeed / HipHeight / DisplayDistance / MaxSlope) to our own
+/// `Humanoid`. Re-writing every tick (rather than once) keeps the value
+/// stuck even when Roblox's own scripts reset it (e.g. respawn, sprint
+/// scripts toggling WalkSpeed back).
+pub fn start_misc_thread(app_handle: AppHandle) {
+    thread::spawn(move || loop {
+        let state = app_handle.state::<AppState>();
+        let sdk_opt = state.sdk.lock().unwrap().clone();
+        if let Some(sdk) = sdk_opt {
+            let humanoid = state.local_humanoid_addr.load(std::sync::atomic::Ordering::Relaxed);
+            if sdk.is_valid_ptr(humanoid) {
+                let cfg = state.misc_cfg.lock().unwrap().clone();
+                if cfg.walk_speed_enabled {
+                    sdk.write::<f32>(humanoid + offsets::Humanoid::WalkSpeed as u64, cfg.walk_speed);
+                }
+                if cfg.hip_height_enabled {
+                    sdk.write::<f32>(humanoid + offsets::Humanoid::HipHeight as u64, cfg.hip_height);
+                }
+                if cfg.display_distance_enabled {
+                    sdk.write::<f32>(humanoid + offsets::Humanoid::DisplayDistance as u64, cfg.display_distance);
+                }
+                if cfg.max_slope_enabled {
+                    sdk.write::<f32>(humanoid + offsets::Humanoid::MaxSlope as u64, cfg.max_slope);
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
+    });
 }

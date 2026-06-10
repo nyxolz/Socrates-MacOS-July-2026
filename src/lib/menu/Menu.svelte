@@ -7,6 +7,7 @@
     import { setZone } from "./zones";
     import TabBar from "./TabBar.svelte";
     import Aiming from "./tabs/Aiming.svelte";
+    import Misc from "./tabs/Misc.svelte";
     import Visuals from "./tabs/Visuals.svelte";
     import Output from "./tabs/Output.svelte";
     import Options from "./tabs/Options.svelte";
@@ -193,6 +194,8 @@
         <div class="body">
             {#if $activeTab === "Aiming"}
                 <Aiming />
+            {:else if $activeTab === "Misc"}
+                <Misc />
             {:else if $activeTab === "Visuals"}
                 <Visuals />
             {:else if $activeTab === "Output"}

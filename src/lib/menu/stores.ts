@@ -2,6 +2,7 @@ import { writable, get as getStore, type Writable } from "svelte/store";
 
 export type TabId =
     | "Aiming"
+    | "Misc"
     | "Visuals"
     | "Output"
     | "Options"
@@ -13,6 +14,7 @@ export type TabId =
 
 export const TABS: TabId[] = [
     "Aiming",
+    "Misc",
     "Visuals",
     "Output",
     "Options",
@@ -66,6 +68,7 @@ export const THEME_PRESETS: { name: string; value: string }[] = [
 // the same JSON shape for import/export.
 const AIMBOT_KEY = "socrate.aimbot";
 const VISUALS_KEY = "socrate.visuals";
+const MISC_KEY = "socrate.misc";
 const MENU_OPTS_KEY = "socrate.menuOptions";
 
 // Shallow-merge with defaults so newly-introduced fields in a Socrate
@@ -139,7 +142,7 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     keybind: "MouseRight",
     keybind_mode: "Hold",
     aim_type: "Camera",
-    smoothing: 0.85,
+    smoothing: 0,
     silent_miss_rate: 0.0,
     fov_radius: 150,
     show_fov: false,
@@ -150,7 +153,7 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
 
     prediction_enabled: false,
     prediction_strength: 1.0,
-    velocity_prediction: true,
+    velocity_prediction: false,
     bullet_drop_comp: false,
     gravity_comp: 0,
 
@@ -171,7 +174,7 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     smooth_path: false,
     humanize_strength: 2.0,
     reaction_time: 0,
-    sticky_aim: true,
+    sticky_aim: false,
     target_switch_delay: 0,
     fov_scale_smoothing: false,
     max_speed: 0,
@@ -342,6 +345,30 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
 export const visuals: Writable<VisualsCfg> = writable(loadStored(VISUALS_KEY, VISUALS_DEFAULTS));
 persist(VISUALS_KEY, visuals);
 
+export type MiscCfg = {
+    walk_speed_enabled: boolean;
+    walk_speed: number;
+    hip_height_enabled: boolean;
+    hip_height: number;
+    display_distance_enabled: boolean;
+    display_distance: number;
+    max_slope_enabled: boolean;
+    max_slope: number;
+};
+
+export const MISC_DEFAULTS: MiscCfg = {
+    walk_speed_enabled: false,
+    walk_speed: 16,
+    hip_height_enabled: false,
+    hip_height: 2,
+    display_distance_enabled: false,
+    display_distance: 100,
+    max_slope_enabled: false,
+    max_slope: 89,
+};
+export const misc: Writable<MiscCfg> = writable(loadStored(MISC_KEY, MISC_DEFAULTS));
+persist(MISC_KEY, misc);
+
 // Menu UI options — purely frontend, not synced to backend. `menu_visible`
 // is flipped by a global keybind; while visible, the overlay dims the game
 // and rains theme-coloured snow flakes for fun.
@@ -369,6 +396,7 @@ export type SocrateConfigFile = {
     version: number;
     aimbot: AimbotCfg;
     visuals: VisualsCfg;
+    misc: MiscCfg;
     menuOptions: MenuOptionsCfg;
     theme: string;
 };
@@ -378,6 +406,7 @@ export function exportCurrentConfig(): SocrateConfigFile {
         version: 1,
         aimbot: getStore(aimbot),
         visuals: getStore(visuals),
+        misc: getStore(misc),
         menuOptions: getStore(menuOptions),
         theme: getStore(theme),
     };
@@ -388,16 +417,18 @@ export function applyImportedConfig(raw: unknown): { ok: boolean; reason?: strin
     const cfg = raw as Partial<SocrateConfigFile>;
     if (cfg.aimbot)      aimbot.set({ ...AIMBOT_DEFAULTS, ...cfg.aimbot });
     if (cfg.visuals)     visuals.set({ ...VISUALS_DEFAULTS, ...cfg.visuals });
+    if (cfg.misc)        misc.set({ ...MISC_DEFAULTS, ...cfg.misc });
     if (cfg.menuOptions) menuOptions.set({ ...MENU_OPTIONS_DEFAULTS, ...cfg.menuOptions, menu_visible: true });
     if (typeof cfg.theme === "string" && /^#[0-9a-fA-F]{6}$/.test(cfg.theme)) theme.set(cfg.theme);
     return { ok: true };
 }
 
-/// Restore aimbot, visuals, menu options and theme to their factory defaults.
+/// Restore aimbot, visuals, misc, menu options and theme to their factory defaults.
 /// `menu_visible` is forced true so a reset can never trap the user.
 export function resetToDefaults() {
     aimbot.set({ ...AIMBOT_DEFAULTS });
     visuals.set({ ...VISUALS_DEFAULTS });
+    misc.set({ ...MISC_DEFAULTS });
     menuOptions.set({ ...MENU_OPTIONS_DEFAULTS, menu_visible: true });
     theme.set("#ffde9d");
 }

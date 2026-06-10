@@ -235,6 +235,34 @@ impl Default for VisualsCfg {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct MiscCfg {
+    pub walk_speed_enabled: bool,
+    pub walk_speed: f32,
+    pub hip_height_enabled: bool,
+    pub hip_height: f32,
+    pub display_distance_enabled: bool,
+    pub display_distance: f32,
+    pub max_slope_enabled: bool,
+    pub max_slope: f32,
+}
+
+impl Default for MiscCfg {
+    fn default() -> Self {
+        Self {
+            walk_speed_enabled: false,
+            walk_speed: 16.0,
+            hip_height_enabled: false,
+            hip_height: 2.0,
+            display_distance_enabled: false,
+            display_distance: 100.0,
+            max_slope_enabled: false,
+            max_slope: 89.0,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RobloxBounds {
     pub x: f64,
     pub y: f64,
@@ -293,6 +321,14 @@ pub struct AppState {
     /// sharing this parent is treated as a teammate. 0 until resolved.
     pub local_parent: AtomicU64,
 
+    /// Humanoid instance addr of the LocalPlayer's character, resolved on
+    /// each full character walk. Used by the Misc tab to write WalkSpeed,
+    /// HipHeight, DisplayDistance and MaxSlope to our own character. 0 until
+    /// resolved or while dead/respawning.
+    pub local_humanoid_addr: AtomicU64,
+
+    pub misc_cfg: Mutex<MiscCfg>,
+
     /// Char_addr of the player currently being spectated. 0 = off.
     pub spectate_target: Mutex<u64>,
 
@@ -316,6 +352,8 @@ impl Default for AppState {
             menu_toggle_bind: Mutex::new("IntlBackslash".into()),
             local_player_name: Mutex::new(String::new()),
             local_parent: AtomicU64::new(0),
+            local_humanoid_addr: AtomicU64::new(0),
+            misc_cfg: Mutex::new(MiscCfg::default()),
             spectate_target: Mutex::new(0),
             player_relations: Mutex::new(HashMap::new()),
         }

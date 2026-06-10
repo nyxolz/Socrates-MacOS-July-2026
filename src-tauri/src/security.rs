@@ -198,9 +198,9 @@ const fn compute_key() -> u64 {
 // All offsets are XOR-obfuscated; the active pair is selected at compile time
 // via `#[cfg(target_arch = …)]` below.
 #[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMARM:   u64 = 0x605D2F0u64 ^ KEY_USED_AT_COMPILE;
+const ENC_ENTRY_FAKE_DMARM:   u64 = 0x6101870u64 ^ KEY_USED_AT_COMPILE;
 #[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x6411F38u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
+const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x64AE628u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
 const ENC_FDM_DATAMODEL:      u64 = 0x18u64      ^ KEY_USED_AT_COMPILE;
 const ENC_DM_WORKSPACE:       u64 = 0x168u64     ^ KEY_USED_AT_COMPILE;
 const ENC_WS_CAMERA:          u64 = 0x460u64     ^ KEY_USED_AT_COMPILE;

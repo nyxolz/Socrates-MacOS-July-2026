@@ -8,8 +8,8 @@ pub const ROBLOX_VERSION: &str = "version-73d88b9483b340ae";
 // ─── Entry — static offsets relative to the Roblox base image ─────────────
 pub enum Entry {
     /// `Roblox.base + FakeDataModel` → pointer to the FakeDataModel struct.
-    FakeDataModelARM = 0x5E72AC0,
-    FakeDataModelINTEL = 0x6226F48,
+    FakeDataModelARM = 0x6101870,
+    FakeDataModelINTEL = 0x64AE628,
 }
 
 // ─── Instance (shared layout for every Roblox Instance) ──────────────────
@@ -85,6 +85,10 @@ pub enum InputObject {
 // ─── Humanoid ────────────────────────────────────────────────────────────
 pub enum Humanoid {
     Health = 0x184,
+    DisplayDistance = 0x188,
+    HipHeight = 0x190,
+    MaxSlope = 0x1A8,
+    WalkSpeed = 0x1CC,
 }
 
 // ─── HumanoidRootPart (and any BasePart-like instance) ───────────────────

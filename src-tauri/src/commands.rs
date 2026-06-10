@@ -116,6 +116,11 @@ pub fn set_visuals_config(state: State<AppState>, cfg: VisualsCfg) {
 }
 
 #[tauri::command]
+pub fn set_misc_config(state: State<AppState>, cfg: crate::state::MiscCfg) {
+    *state.misc_cfg.lock().unwrap() = cfg;
+}
+
+#[tauri::command]
 pub fn set_menu_toggle_bind(state: State<AppState>, bind: String) {
     *state.menu_toggle_bind.lock().unwrap() = bind;
 }

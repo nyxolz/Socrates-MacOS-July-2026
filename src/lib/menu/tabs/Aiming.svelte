@@ -8,7 +8,7 @@
     import ColorPicker from "../controls/ColorPicker.svelte";
 
     const PARTS = ["Head", "Torso", "HumanoidRootPart"] as const;
-    const SELECT_MODES = ["Distance", "Health", "Crosshair"] as const;
+    const SELECT_MODES = ["Crosshair"] as const;
     const AIM_TYPES = ["Mouse", "Camera", "Silent Aim"] as const;
     const KEYBIND_MODES = ["Hold", "Toggle"] as const;
 </script>
@@ -34,7 +34,7 @@
                 <ColorPicker bind:value={$aimbot.fov_fill_color} title="Fill colour" />
             </div>
             <Slider label="Smoothness" bind:value={$aimbot.smoothing}
-                min={0.01} max={1} step={0.01} format={(v) => v.toFixed(2)} />
+                min={0} max={1} step={0.01} format={(v) => v.toFixed(2)} />
             {#if $aimbot.aim_type === "Silent Aim"}
                 <Slider label="Miss rate" bind:value={$aimbot.silent_miss_rate}
                     min={0} max={1} step={0.01} format={(v) => (v * 100).toFixed(0) + "%"} />

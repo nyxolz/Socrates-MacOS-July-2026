@@ -29,7 +29,7 @@ use crate::input::start_input_thread;
 use crate::menu_hotkey::start_menu_hotkey_thread;
 use crate::overlay::bounds::find_window_bounds;
 use crate::overlay::{setup_window_overlay, start_mouse_tracker, start_window_tracker};
-use crate::players::start_char_cache_thread;
+use crate::players::{start_char_cache_thread, start_misc_thread};
 use crate::security::start_security_thread;
 use crate::spectate::start_spectate_thread;
 use crate::state::AppState;
@@ -175,6 +175,7 @@ pub fn run() {
             start_window_tracker(window.clone(), app.handle().clone());
             start_mouse_tracker(window, app.handle().clone());
             start_char_cache_thread(app.handle().clone());
+            start_misc_thread(app.handle().clone());
             start_esp_thread(app.handle().clone());
             start_input_thread(app.handle().clone());
             start_aimbot_thread(app.handle().clone());
@@ -196,6 +197,7 @@ pub fn run() {
             commands::sdk_status,
             commands::set_aimbot_config,
             commands::set_visuals_config,
+            commands::set_misc_config,
             commands::set_menu_toggle_bind,
             commands::get_self_ram_bytes,
             commands::diag_check,
