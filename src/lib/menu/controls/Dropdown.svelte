@@ -34,6 +34,9 @@
         border: 1px solid var(--border);
         border-radius: var(--radius-small);
     }
+    .select:hover {
+        border-color: var(--accent-off);
+    }
     select {
         width: 100%;
         appearance: none;

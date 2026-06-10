@@ -38,6 +38,9 @@ export const updateAvailable: Writable<boolean> = writable(false);
 
 export const activeTab: Writable<TabId> = writable("Aiming");
 
+// Floating ESP preview window — toggled from the Visuals tab header.
+export const previewWindowOpen: Writable<boolean> = writable(false);
+
 // Cross-tab channel: hex address (e.g. "0x1234") the Explorer should reveal —
 // expand the path to it, scroll it into view, and flash it. Set by the Player
 // List's "View in explorer" button (alongside flipping `activeTab` to
@@ -370,18 +373,15 @@ export const misc: Writable<MiscCfg> = writable(loadStored(MISC_KEY, MISC_DEFAUL
 persist(MISC_KEY, misc);
 
 // Menu UI options — purely frontend, not synced to backend. `menu_visible`
-// is flipped by a global keybind; while visible, the overlay dims the game
-// and rains theme-coloured snow flakes for fun.
+// is flipped by a global keybind.
 export type MenuOptionsCfg = {
     menu_visible: boolean;
     toggle_bind: string;
-    snow_enabled: boolean;
     show_binds: boolean;
 };
 export const MENU_OPTIONS_DEFAULTS: MenuOptionsCfg = {
     menu_visible: true,
     toggle_bind: "IntlBackslash",
-    snow_enabled: true,
     show_binds: true,
 };
 export const menuOptions: Writable<MenuOptionsCfg> = writable(
@@ -421,6 +421,55 @@ export function applyImportedConfig(raw: unknown): { ok: boolean; reason?: strin
     if (cfg.menuOptions) menuOptions.set({ ...MENU_OPTIONS_DEFAULTS, ...cfg.menuOptions, menu_visible: true });
     if (typeof cfg.theme === "string" && /^#[0-9a-fA-F]{6}$/.test(cfg.theme)) theme.set(cfg.theme);
     return { ok: true };
+}
+
+// ─── Saved configs (named JSON snapshots, kept in localStorage) ────
+const SAVED_CONFIGS_KEY = "socrate.savedConfigs";
+
+export type SavedConfig = { name: string; content: string; createdAt: string };
+
+function loadSavedConfigs(): SavedConfig[] {
+    if (typeof localStorage === "undefined") return [];
+    try {
+        const raw = localStorage.getItem(SAVED_CONFIGS_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((c: Partial<SavedConfig>) => ({
+            name: c.name ?? "",
+            content: c.content ?? "",
+            createdAt: c.createdAt ?? formatDate(new Date()),
+        }));
+    } catch { return []; }
+}
+
+export function formatDate(d: Date): string {
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    return `${dd}.${mm}.${d.getFullYear()}`;
+}
+
+export const savedConfigs = writable<SavedConfig[]>(loadSavedConfigs());
+persist(SAVED_CONFIGS_KEY, savedConfigs);
+
+export function addSavedConfig(name: string, content: string) {
+    const createdAt = formatDate(new Date());
+    savedConfigs.update((list) => [...list.filter((c) => c.name !== name), { name, content, createdAt }]);
+}
+
+export function deleteSavedConfig(name: string) {
+    savedConfigs.update((list) => list.filter((c) => c.name !== name));
+}
+
+export function renameSavedConfig(oldName: string, newName: string) {
+    savedConfigs.update((list) => list.map((c) => (c.name === oldName ? { ...c, name: newName } : c)));
+}
+
+export function loadSavedConfig(content: string): { ok: boolean; reason?: string } {
+    try {
+        return applyImportedConfig(JSON.parse(content));
+    } catch (err) {
+        return { ok: false, reason: String(err) };
+    }
 }
 
 /// Restore aimbot, visuals, misc, menu options and theme to their factory defaults.

@@ -35,7 +35,6 @@
     <div class="col">
         <Section title="Menu" icon="sliders" active>
             <KeybindInput label="Hide menu" noMouse bind:value={$menuOptions.toggle_bind} />
-            <Toggle label="Snow effect" bind:checked={$menuOptions.snow_enabled} />
             <Toggle label="Show binds HUD" bind:checked={$menuOptions.show_binds} />
         </Section>
     </div>

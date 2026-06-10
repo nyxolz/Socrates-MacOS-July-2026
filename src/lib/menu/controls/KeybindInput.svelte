@@ -116,8 +116,8 @@
     }
     .bind {
         background: var(--bg-input);
-        border: 3px solid var(--border);
-        border-radius: 10px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-small);
         color: var(--text);
         font: inherit;
         font-size: 11px;
@@ -126,17 +126,15 @@
         cursor: pointer;
         outline: none;
         font-variant-numeric: tabular-nums;
-    }
-    .bind {
         transition: border-color 140ms var(--ease), background 140ms var(--ease), color 140ms var(--ease);
     }
     .bind:hover {
-        border-color: var(--accent);
+        border-color: var(--accent-off);
     }
     .bind.listening {
         border-color: var(--accent);
         color: var(--accent);
-        background: rgba(255, 222, 157, 0.07);
+        background: var(--bg-tab-active);
     }
     .bind.compact {
         padding: 3px 7px;

@@ -1,11 +1,11 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { invoke } from "@tauri-apps/api/core";
-    import { activeTab, theme, menuOptions, localVersion, remoteVersion, lastVersionCheck, updateAvailable } from "./stores";
+    import { activeTab, theme, menuOptions, localVersion, remoteVersion, lastVersionCheck, updateAvailable, previewWindowOpen } from "./stores";
     import { get } from "svelte/store";
     import { startConfigBridge } from "./bridge";
     import { setZone } from "./zones";
-    import TabBar from "./TabBar.svelte";
+    import Sidebar from "./Sidebar.svelte";
     import Aiming from "./tabs/Aiming.svelte";
     import Misc from "./tabs/Misc.svelte";
     import Visuals from "./tabs/Visuals.svelte";
@@ -17,6 +17,8 @@
     import Servers from "./tabs/Servers.svelte";
     import Settings from "./tabs/Settings.svelte";
     import Icon from "./controls/Icon.svelte";
+    import Button from "./controls/Button.svelte";
+    import PreviewWindow from "./PreviewWindow.svelte";
     import "./tokens.css";
 
     function hexToRgba(hex: string, alpha: number): string {
@@ -59,11 +61,11 @@
         );
     }
 
-    // Portrait shape — wide enough for a 2-column body, tall enough to fill
-    // most of the Roblox window. Width is fixed; height is `85vh` clamped.
+    // Landscape shape — tall enough for a 2-column body, wide enough to fill
+    // most of the Roblox window. Height is fixed; width is `85vw` clamped.
     let pos = { x: 24, y: 24 };
-    const MENU_W = 490;
-    let menuH = 0;
+    const MENU_H = 420;
+    let menuW = 0;
 
     let dragging = false;
     let dragOffset = { x: 0, y: 0 };
@@ -84,7 +86,7 @@
             return;
         }
         const r = menuEl.getBoundingClientRect();
-        menuH = r.height;
+        menuW = r.width;
         setZone("menu", { x: r.left, y: r.top, w: r.width, h: r.height });
     }
 
@@ -94,8 +96,8 @@
     function clampToViewport() {
         const w = window.innerWidth;
         const h = window.innerHeight;
-        pos.x = Math.max(0, Math.min(pos.x, w - MENU_W));
-        pos.y = Math.max(0, Math.min(pos.y, h - menuH));
+        pos.x = Math.max(0, Math.min(pos.x, w - menuW));
+        pos.y = Math.max(0, Math.min(pos.y, h - MENU_H));
         pos = pos;
     }
 
@@ -164,7 +166,7 @@
     class="socrate-menu window"
     class:hidden={!$menuOptions.menu_visible}
     class:minimized
-    style="left: {pos.x}px; top: {pos.y}px; width: {MENU_W}px; {themeStyle}"
+    style="left: {pos.x}px; top: {pos.y}px; --menu-h: {MENU_H}px; {themeStyle}"
 >
     <div
         bind:this={headerEl}
@@ -176,7 +178,7 @@
         on:pointercancel={onPointerUp}
     >
         <span class="brand">Socrate</span>
-        <span class="version">{socrateVersion} · https://usesocrate.xyz/</span>
+        <span class="version">{socrateVersion}</span>
         <span class="spacer"></span>
         <button class="iconbtn" title={minimized ? "Restore" : "Minimize"}
                 on:click|stopPropagation={toggleMinimize}
@@ -189,40 +191,50 @@
     </div>
 
     {#if !minimized}
-        <TabBar />
-
         <div class="body">
-            {#if $activeTab === "Aiming"}
-                <Aiming />
-            {:else if $activeTab === "Misc"}
-                <Misc />
-            {:else if $activeTab === "Visuals"}
-                <Visuals />
-            {:else if $activeTab === "Output"}
-                <Output />
-            {:else if $activeTab === "Options"}
-                <Options />
-            {:else if $activeTab === "Player List"}
-                <PlayerList />
-            {:else if $activeTab === "Explorer"}
-                <Explorer />
-            {:else if $activeTab === "Configs"}
-                <Configs />
-            {:else if $activeTab === "Servers"}
-                <Servers />
-            {:else if $activeTab === "Settings"}
-                <Settings />
-            {/if}
+            <Sidebar />
+            <div class="content">
+                <div class="content-title-row">
+                    <h1 class="content-title">{$activeTab}</h1>
+                    {#if $activeTab === "Visuals"}
+                        <Button icon="eye" label="Show preview" onclick={() => previewWindowOpen.update(v => !v)} />
+                    {/if}
+                </div>
+                {#if $activeTab === "Aiming"}
+                    <Aiming />
+                {:else if $activeTab === "Misc"}
+                    <Misc />
+                {:else if $activeTab === "Visuals"}
+                    <Visuals />
+                {:else if $activeTab === "Output"}
+                    <Output />
+                {:else if $activeTab === "Options"}
+                    <Options />
+                {:else if $activeTab === "Player List"}
+                    <PlayerList />
+                {:else if $activeTab === "Explorer"}
+                    <Explorer />
+                {:else if $activeTab === "Configs"}
+                    <Configs />
+                {:else if $activeTab === "Servers"}
+                    <Servers />
+                {:else if $activeTab === "Settings"}
+                    <Settings />
+                {/if}
+            </div>
         </div>
     {/if}
 </div>
 
+<PreviewWindow left={pos.x + menuW + 30} top={pos.y} />
+
 <style>
     .window {
         position: fixed;
-        height: 85vh;
-        min-height: 420px;
-        max-height: 900px;
+        width: calc(85vw - 540px);
+        min-width: 640px;
+        max-width: 1200px;
+        height: var(--menu-h);
         background: var(--bg-window);
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -296,9 +308,29 @@
     .body {
         flex: 1;
         min-height: 0;
-        overflow-y: auto;
+        display: flex;
+        flex-direction: row;
         background: var(--bg-window);
     }
-    .body::-webkit-scrollbar { width: 6px; }
-    .body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .content {
+        flex: 1;
+        min-width: 0;
+        overflow-y: auto;
+        background: var(--bg-sidebar);
+    }
+    .content-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 10px 10px 0 10px;
+    }
+    .content-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text);
+    }
+    .content::-webkit-scrollbar { width: 6px; }
+    .content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 </style>

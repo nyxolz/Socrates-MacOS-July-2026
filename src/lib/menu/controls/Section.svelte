@@ -22,18 +22,19 @@
 
 <style>
     .section {
-        background: var(--bg-panel);
+        background: var(--bg-sidebar);
         border: 1px solid var(--border-soft);
         border-radius: var(--radius);
-        margin-bottom: 7px;
+        margin-bottom: 8px;
+        overflow: hidden;
     }
     .header {
         display: flex;
         align-items: center;
-        gap: 7px;
-        padding: 7px 10px;
+        gap: 8px;
+        padding: 9px 12px;
         border-bottom: 1px solid var(--border-soft);
-        color: var(--text-muted);
+        color: var(--text);
     }
     .dot {
         width: 6px;
@@ -43,32 +44,36 @@
     }
     .ic {
         display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: var(--radius-small);
+        background: var(--bg-input);
         color: var(--text-muted);
     }
     .header {
         transition: color 160ms var(--ease);
     }
-    .active .ic,
-    .active .title {
+    .active .ic {
         color: var(--accent);
     }
     .active .dot {
         background: var(--accent);
-        box-shadow: 0 0 5px var(--accent-glow);
     }
     .ic, .title {
         transition: color 160ms var(--ease);
     }
     .title {
         font-weight: 600;
-        font-size: 11px;
+        font-size: 11.5px;
         letter-spacing: 0.2px;
         color: var(--text);
     }
     .body {
-        padding: 8px 10px 10px 10px;
+        padding: 9px 12px 11px 12px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 7px;
     }
 </style>

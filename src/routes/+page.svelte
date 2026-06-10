@@ -62,53 +62,6 @@
         const b = parseInt(h.slice(4, 6), 16) || 0;
         return `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
-    function hexToRgbTriplet(hex: string): string {
-        const h = hex.replace("#", "");
-        const r = parseInt(h.slice(0, 2), 16) || 0;
-        const g = parseInt(h.slice(2, 4), 16) || 0;
-        const b = parseInt(h.slice(4, 6), 16) || 0;
-        return `${r}, ${g}, ${b}`;
-    }
-
-    // Snow particles. `z` ∈ [0,1] is depth — small/slow/dim at z=0 (far),
-    // big/fast/opaque at z=1 (close). Drift = horizontal sway phase.
-    type Snowflake = { x: number; y: number; z: number; sway: number };
-    const SNOW_COUNT = 140;
-    let snow: Snowflake[] = [];
-    let lastSnowTick = 0;
-
-    function makeSnowflake(spawnTop: boolean): Snowflake {
-        return {
-            x: Math.random() * window.innerWidth,
-            y: spawnTop ? -8 - Math.random() * 40 : Math.random() * window.innerHeight,
-            z: Math.random(),
-            sway: Math.random() * Math.PI * 2,
-        };
-    }
-    function initSnow() {
-        snow = Array.from({ length: SNOW_COUNT }, () => makeSnowflake(false));
-    }
-    function drawSnow(ctx: CanvasRenderingContext2D, color: string, dt: number) {
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        const rgb = hexToRgbTriplet(color);
-        for (const s of snow) {
-            const speed = 25 + s.z * 110;
-            s.y += speed * dt;
-            s.sway += (0.4 + s.z * 0.6) * dt * 2;
-            s.x += Math.sin(s.sway) * (8 + s.z * 14) * dt;
-            if (s.y > h + 8) Object.assign(s, makeSnowflake(true));
-            if (s.x > w + 12) s.x = -12;
-            if (s.x < -12) s.x = w + 12;
-            const radius = 0.8 + s.z * 4.2;
-            const alpha = 0.22 + s.z * 0.7;
-            ctx.fillStyle = `rgba(${rgb}, ${alpha})`;
-            ctx.beginPath();
-            ctx.arc(s.x, s.y, radius, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
     function resizeCanvas() {
         const dpr = window.devicePixelRatio || 1;
         canvas.width = window.innerWidth * dpr;
@@ -403,28 +356,8 @@
 
     function renderLoop() {
         const ctx = canvas?.getContext("2d");
-        const now = performance.now();
-        const dt = lastSnowTick === 0 ? 0 : Math.min(0.05, (now - lastSnowTick) / 1000);
-        lastSnowTick = now;
         if (ctx) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            // Menu-visible decoration: dim the game with a light black wash
-            // (rounded rect, low alpha so the game stays clearly readable
-            // behind the snow + menu) and rain themed snow underneath the
-            // ESP/UI.
-            if (mcfg?.menu_visible) {
-                const w = window.innerWidth;
-                const h = window.innerHeight;
-                ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
-                ctx.beginPath();
-                if (typeof (ctx as any).roundRect === "function") {
-                    (ctx as any).roundRect(0, 0, w, h, 14);
-                } else {
-                    ctx.rect(0, 0, w, h);
-                }
-                ctx.fill();
-                if (mcfg.snow_enabled) drawSnow(ctx, themeColor, dt);
-            }
         }
         if (ctx && lastFrame && vcfg) {
             const cfg = vcfg;
@@ -545,7 +478,6 @@
         // before the overlay window is even created. By the time we mount
         // here, Roblox is guaranteed to be running.
         resizeCanvas();
-        initSnow();
         window.addEventListener("resize", resizeCanvas);
         window.addEventListener("keydown", onToggleKey, true);
         unlistenFrame = await listen<EspFrame>("esp_frame", (e) => { lastFrame = e.payload; });

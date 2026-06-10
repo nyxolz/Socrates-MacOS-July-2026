@@ -8,7 +8,7 @@
 
     $: pct = max === min ? 0 : ((value - min) / (max - min)) * 100;
 
-    const KNOB_PX = 12;
+    const KNOB_PX = 10;
 </script>
 
 <div class="slider">
@@ -46,26 +46,24 @@
     }
     .track {
         position: relative;
-        height: 16px;
+        height: 5px;
         background: var(--bg-input);
         border: 1px solid var(--border);
-        border-radius: 8px;
-        overflow: hidden;
+        border-radius: 3px;
+        overflow: visible;
     }
-    /* Fill width = knob's right edge + 2 px. The yellow band runs past the
-       centre of the knob and visually wraps the right side of the white ball.
-       No transition — the user wants the drag to feel instant. */
+    /* Flat fill — small transition keeps drag feel responsive while still
+       smoothing out programmatic value changes (config loads etc). */
     .fill {
         position: absolute;
-        top: 0; left: 0; bottom: 0;
-        width: calc((100% - var(--knob)) * var(--pct) / 100% + var(--knob) + 2px);
+        top: -1px; left: -1px; bottom: -1px;
+        width: calc((100% - var(--knob)) * var(--pct) / 100% + var(--knob) / 2);
         max-width: 100%;
-        background: linear-gradient(90deg, var(--accent-soft) 0%, var(--accent) 100%);
-        border-radius: 8px;
-        box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.08);
+        background: var(--accent);
+        border-radius: 3px;
+        transition: width 80ms var(--ease);
     }
-    /* Knob centre travels from knob_w/2 to (W - knob_w/2) so the whole ball
-       stays inside the track. */
+    /* Small flat knob, centred on the fill edge. */
     .knob {
         position: absolute;
         top: 50%;
@@ -75,11 +73,9 @@
         transform: translateY(-50%);
         background: #ffffff;
         border-radius: 50%;
-        box-shadow:
-            0 0 5px var(--accent-glow),
-            0 1px 2px rgba(0, 0, 0, 0.45),
-            inset 0 -1px 1px rgba(0, 0, 0, 0.08);
         pointer-events: none;
+        transition: left 80ms var(--ease);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     }
     input {
         position: absolute;

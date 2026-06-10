@@ -1,5 +1,7 @@
 <script lang="ts">
+    import { scale } from "svelte/transition";
     import { toast } from "../toast";
+    import Icon from "./Icon.svelte";
 
     export let label: string;
     export let checked: boolean = false;
@@ -16,9 +18,15 @@
 
 <label class="toggle">
     <input type="checkbox" bind:checked on:change={onChange} />
-    <span class="box" class:on={checked}></span>
     <span class="label">{label}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}
+    <span class="box" class:on={checked}>
+        {#if checked}
+            <span class="check" in:scale={{ duration: 140, start: 0.4, opacity: 0 }}>
+                <Icon name="check" size={11} />
+            </span>
+        {/if}
+    </span>
 </label>
 
 <style>
@@ -36,26 +44,33 @@
         pointer-events: none;
     }
     .box {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         width: 16px;
         height: 16px;
-        /* Slight square-rounded shape — not a full circle, max 3-4px of corner */
+        margin-left: auto;
         border-radius: 4px;
         border: 1.5px solid var(--accent-off);
         background: var(--bg-input);
+        color: #0a0a0d;
         flex-shrink: 0;
         transition:
             background 180ms var(--ease),
             border-color 180ms var(--ease),
-            box-shadow 180ms var(--ease),
             transform 120ms var(--ease);
     }
     .box.on {
         background: var(--accent-on);
         border-color: var(--accent-on);
-        box-shadow: 0 0 8px var(--accent-glow), inset 0 0 6px rgba(255, 255, 255, 0.15);
     }
     .toggle:active .box {
-        transform: scale(0.92);
+        transform: scale(0.88);
+    }
+    .check {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
     }
     .label {
         font-size: 11px;

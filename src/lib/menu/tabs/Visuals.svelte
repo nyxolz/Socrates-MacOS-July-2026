@@ -5,7 +5,6 @@
     import Slider from "../controls/Slider.svelte";
     import Dropdown from "../controls/Dropdown.svelte";
     import ColorPicker from "../controls/ColorPicker.svelte";
-    import Preview from "../Preview.svelte";
 
     const ORIGINS = ["Top", "Center", "Bottom"] as const;
 </script>
@@ -128,10 +127,6 @@
             <Toggle bind:checked={$visuals.outline} label="Black outline" />
         </Section>
 
-        <Section title="Preview" icon="eye">
-            <Preview />
-            <p class="hint">drag the labels to reposition — applies to real ESP</p>
-        </Section>
     </div>
 </div>
 
@@ -147,10 +142,4 @@
     .row { display: flex; align-items: center; gap: 8px; }
     .row :global(.toggle) { flex: 1; }
     .lbl { flex: 1; font-size: 11px; color: var(--text); }
-    .hint {
-        margin: 6px 0 0 0;
-        font-size: 9px;
-        color: var(--text-muted);
-        text-align: center;
-    }
 </style>
