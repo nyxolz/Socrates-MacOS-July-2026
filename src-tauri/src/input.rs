@@ -55,8 +55,9 @@ fn wanted_binds(app: &AppHandle) -> HashSet<String> {
     let state = app.state::<AppState>();
     let aimbot = state.aimbot_cfg.lock().unwrap();
     let menu_bind = state.menu_toggle_bind.lock().unwrap();
+    let misc = state.misc_cfg.lock().unwrap();
     let mut set = HashSet::new();
-    for b in [menu_bind.as_str(), aimbot.keybind.as_str(), aimbot.trigger_keybind.as_str()] {
+    for b in [menu_bind.as_str(), aimbot.keybind.as_str(), aimbot.trigger_keybind.as_str(), misc.fly_keybind.as_str()] {
         // Only keyboard binds need to be registered — mouse buttons are
         // polled from NSEvent on the fly.
         if !b.is_empty() && mouse_button(b).is_none() {

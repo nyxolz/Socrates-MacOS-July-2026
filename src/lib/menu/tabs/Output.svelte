@@ -23,7 +23,7 @@
     <div class="col">
         <Section title="Status" icon="terminal" active={ok}>
             <div class="line" class:ok class:fail={!ok}>
-                {ok ? "✓ Offsets updated" : "✗ Workspace not found"}
+                {ok ? "✓ Offset Updated" : "✗ Offset out of date"}
             </div>
             <div class="sub">build: <span class="arch">{arch || "…"}</span></div>
         </Section>

@@ -10,7 +10,13 @@ export type TabId =
     | "Explorer"
     | "Configs"
     | "Servers"
+    | "Dev"
     | "Settings";
+
+// Code-gated developer tab. Flip to `true` to expose the "Dev" tab in the
+// sidebar; ship with `false`. Nothing else references this — toggling it here
+// is the single switch to enable/disable the tab.
+export const DEV_TAB_ENABLED = true;
 
 export const TABS: TabId[] = [
     "Aiming",
@@ -22,6 +28,7 @@ export const TABS: TabId[] = [
     "Explorer",
     "Configs",
     "Servers",
+    ...(DEV_TAB_ENABLED ? (["Dev"] as TabId[]) : []),
     "Settings",
 ];
 
@@ -71,7 +78,6 @@ export const THEME_PRESETS: { name: string; value: string }[] = [
 // the same JSON shape for import/export.
 const AIMBOT_KEY = "socrate.aimbot";
 const VISUALS_KEY = "socrate.visuals";
-const MISC_KEY = "socrate.misc";
 const MENU_OPTS_KEY = "socrate.menuOptions";
 
 // Shallow-merge with defaults so newly-introduced fields in a Socrate
@@ -182,7 +188,13 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     fov_scale_smoothing: false,
     max_speed: 0,
 };
-export const aimbot: Writable<AimbotCfg> = writable(loadStored(AIMBOT_KEY, AIMBOT_DEFAULTS));
+// Team check is never restored from storage — every launch starts with it
+// disabled, regardless of what was saved last session. It can only be
+// turned on manually for the current session.
+export const aimbot: Writable<AimbotCfg> = writable({
+    ...loadStored(AIMBOT_KEY, AIMBOT_DEFAULTS),
+    team_check: false,
+});
 persist(AIMBOT_KEY, aimbot);
 
 export type TracerOrigin = "Top" | "Center" | "Bottom";
@@ -247,6 +259,13 @@ export type VisualsCfg = {
     health_bar: boolean;
     health_bar_color: string;
 
+    // Per-part box ESP — semi-transparent quad scaled to each part's real Size.
+    part_esp: boolean;
+    part_esp_color: string;
+    part_esp_opacity: number;
+    part_esp_border: boolean;
+    part_esp_border_color: string;
+
     // Avatar head — circular thumbnail anchored to the 2-D box just like
     // text labels. `size` is a fixed pixel diameter so the head stays the
     // same on-screen size regardless of how far the player is.
@@ -260,7 +279,6 @@ export type VisualsCfg = {
     avatar_head_offset_y: number;
 
     // Filters
-    team_check: boolean;
     show_self: boolean;
     max_distance: number;
     /// Skip any character whose distance from the camera is below this —
@@ -325,6 +343,12 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
     health_bar: false,
     health_bar_color: "#ffffff",
 
+    part_esp: false,
+    part_esp_color: "#ffffff",
+    part_esp_opacity: 0.25,
+    part_esp_border: true,
+    part_esp_border_color: "#ffffff",
+
     avatar_head: false,
     avatar_head_size: 28,
     avatar_head_border_color: "#ffde9d",
@@ -334,7 +358,6 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
     avatar_head_offset_x: 0,
     avatar_head_offset_y: -18,
 
-    team_check: false,
     show_self: false,
     max_distance: 1500,
     min_distance: 3,
@@ -349,28 +372,33 @@ export const visuals: Writable<VisualsCfg> = writable(loadStored(VISUALS_KEY, VI
 persist(VISUALS_KEY, visuals);
 
 export type MiscCfg = {
-    walk_speed_enabled: boolean;
-    walk_speed: number;
     hip_height_enabled: boolean;
     hip_height: number;
+    jump_power_enabled: boolean;
+    jump_power: number;
     display_distance_enabled: boolean;
     display_distance: number;
-    max_slope_enabled: boolean;
-    max_slope: number;
+    fly_enabled: boolean;
+    fly_keybind: string;
+    fly_speed: number;
+    noclip_enabled: boolean;
 };
 
 export const MISC_DEFAULTS: MiscCfg = {
-    walk_speed_enabled: false,
-    walk_speed: 16,
     hip_height_enabled: false,
     hip_height: 2,
+    jump_power_enabled: false,
+    jump_power: 50,
     display_distance_enabled: false,
     display_distance: 100,
-    max_slope_enabled: false,
-    max_slope: 89,
+    fly_enabled: false,
+    fly_keybind: "",
+    fly_speed: 5,
+    noclip_enabled: false,
 };
-export const misc: Writable<MiscCfg> = writable(loadStored(MISC_KEY, MISC_DEFAULTS));
-persist(MISC_KEY, misc);
+// Misc tab settings are never persisted — always reset to defaults
+// (disabled) on every Socrate restart.
+export const misc: Writable<MiscCfg> = writable(MISC_DEFAULTS);
 
 // Menu UI options — purely frontend, not synced to backend. `menu_visible`
 // is flipped by a global keybind.
@@ -378,11 +406,13 @@ export type MenuOptionsCfg = {
     menu_visible: boolean;
     toggle_bind: string;
     show_binds: boolean;
+    stream_proof: boolean;
 };
 export const MENU_OPTIONS_DEFAULTS: MenuOptionsCfg = {
     menu_visible: true,
     toggle_bind: "IntlBackslash",
     show_binds: true,
+    stream_proof: true,
 };
 export const menuOptions: Writable<MenuOptionsCfg> = writable(
     // menu_visible is volatile — always start visible on launch, ignore the

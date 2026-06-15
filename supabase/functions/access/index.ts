@@ -65,7 +65,9 @@ function safeEqual(a: string, b: string): boolean {
 
 // ─── pc_id validation (#1) ──────────────────────────────────────────
 // macOS IOPlatformUUID is a standard UUID; reject anything else to kill spam.
-const UUID_RE = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
+// Ronin tags its ids with a leading "Ronin-" so they're distinguishable in the
+// table — allow that optional prefix in addition to the bare Socrate UUID.
+const UUID_RE = /^(?:Ronin-)?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
 
 // ─── Rate limiting (#2) ─────────────────────────────────────────────
 // In-memory fixed window. Note: state is per warm isolate, so this is a soft
@@ -93,8 +95,8 @@ Deno.serve(async (req) => {
   // configured server-side we skip (lets you deploy before rolling the key),
   // but that path is logged so it doesn't stay unprotected silently.
   if (HMAC_SECRET) {
-    const ts = req.headers.get("x-socrate-ts") ?? "";
-    const sig = req.headers.get("x-socrate-sig") ?? "";
+    const ts = req.headers.get("x-ronin-ts") ?? req.headers.get("x-socrate-ts") ?? "";
+    const sig = req.headers.get("x-ronin-sig") ?? req.headers.get("x-socrate-sig") ?? "";
     const tsNum = parseInt(ts, 10);
     if (!ts || !sig || !Number.isFinite(tsNum)) {
       return json({ error: "unsigned" }, 401);

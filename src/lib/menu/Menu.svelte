@@ -15,6 +15,7 @@
     import Explorer from "./tabs/Explorer.svelte";
     import Configs from "./tabs/Configs.svelte";
     import Servers from "./tabs/Servers.svelte";
+    import Dev from "./tabs/Dev.svelte";
     import Settings from "./tabs/Settings.svelte";
     import Icon from "./controls/Icon.svelte";
     import Button from "./controls/Button.svelte";
@@ -92,6 +93,12 @@
 
     // Re-push (or clear) the zone whenever visibility flips.
     $: if (typeof window !== "undefined") { void $menuOptions.menu_visible; pushZone(); }
+
+    // Apply stream-proofing to the overlay window whenever the setting changes
+    // (and once on mount via the initial store value).
+    $: if (typeof window !== "undefined") {
+        invoke("set_stream_proof", { enabled: $menuOptions.stream_proof }).catch(() => {});
+    }
 
     function clampToViewport() {
         const w = window.innerWidth;
@@ -197,7 +204,10 @@
                 <div class="content-title-row">
                     <h1 class="content-title">{$activeTab}</h1>
                     {#if $activeTab === "Visuals"}
-                        <Button icon="eye" label="Show preview" onclick={() => previewWindowOpen.update(v => !v)} />
+                        <div class="title-actions">
+                            <Button icon="eye" label="Show preview" onclick={() => previewWindowOpen.update(v => !v)} />
+                            <Button icon="load" label="Reset ESP" onclick={() => invoke("reset_esp").catch(() => {})} />
+                        </div>
                     {/if}
                 </div>
                 {#if $activeTab === "Aiming"}
@@ -218,6 +228,8 @@
                     <Configs />
                 {:else if $activeTab === "Servers"}
                     <Servers />
+                {:else if $activeTab === "Dev"}
+                    <Dev />
                 {:else if $activeTab === "Settings"}
                     <Settings />
                 {/if}
@@ -324,6 +336,11 @@
         justify-content: space-between;
         gap: 8px;
         margin: 10px 10px 0 10px;
+    }
+    .title-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
     }
     .content-title {
         margin: 0;

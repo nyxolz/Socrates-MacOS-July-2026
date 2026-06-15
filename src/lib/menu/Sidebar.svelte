@@ -18,20 +18,16 @@
         "Explorer": "code",
         "Configs": "package",
         "Servers": "server",
+        "Dev": "code",
         "Settings": "gear",
     };
 
-    // Dense grid of tiny grayscale pixels filling the active button — each
-    // one flickers between shades on its own random timer for a "hacker
-    // terminal" glitch effect, while staying within the theme's greys.
-    const PIXEL_COLS = 25;
-    const PIXEL_ROWS = 12;
-    const PIXEL_COLORS = ["#87878f", "#a8a8b0", "#d4d4d8", "#e8e8ec", "#ffffff"];
-    const PIXEL_GRID = Array.from({ length: PIXEL_COLS * PIXEL_ROWS }, () => ({
-        c: PIXEL_COLORS[Math.floor(Math.random() * PIXEL_COLORS.length)],
-        d: Math.random() * 3,
-        dur: 0.6 + Math.random() * 1.8,
-    }));
+
+    // A continuous streak travelling around the active button's border,
+    // fading toward the tail. Built from a handful of larger overlapping
+    // dots rather than many tiny ones — same streak length, ~3x less paint.
+    const TRAIL_LEN = 45;
+    const TRAIL = Array.from({ length: TRAIL_LEN }, (_, i) => i);
 
     let itemEls: HTMLButtonElement[] = [];
     let indicatorTop = 0;
@@ -79,11 +75,10 @@
                 title={t === "Settings" && $updateAvailable ? "Update available" : t}
             >
                 {#if $activeTab === t}
-                    <span class="pixels">
-                        {#each PIXEL_GRID as p, idx (idx)}
-                            <span class="px" style="--c: {p.c}; --d: {p.d}s; --dur: {p.dur}s;"></span>
+                    <span class="border-line">
+                        {#each TRAIL as i}
+                            <span class="dot" style="--i: {i}; opacity: {1 - i / TRAIL_LEN}"></span>
                         {/each}
-                        <span class="fade"></span>
                     </span>
                 {/if}
                 <span class="content">
@@ -276,41 +271,29 @@
         line-height: 1;
         flex-shrink: 0;
     }
-    /* Stack of tiny pixel squares filling the right half of the active
-       button — each one a different gradient colour, fading in/out between
-       0.1 and 0.4 opacity with a per-pixel delay so it ripples like a wave. */
-    .pixels {
+    /* A dense stream of dots, packed close enough to read as one solid
+       white streak travelling around the border. Circles have no
+       orientation, so the streak stays perfectly smooth around corners. */
+    .border-line {
         position: absolute;
         inset: 0;
-        left: 50%;
-        display: grid;
-        grid-template-columns: repeat(25, 1fr);
-        grid-template-rows: repeat(12, 1fr);
-        gap: 1px;
+        pointer-events: none;
         z-index: 0;
-        pointer-events: none;
-        overflow: hidden;
-        border-top-right-radius: var(--radius);
-        border-bottom-right-radius: var(--radius);
     }
-    .px {
-        background: var(--c);
-        border-radius: 0.5px;
-        opacity: 0.12;
-        transform: skewX(-20deg);
-        animation: px-glitch var(--dur) ease-in-out var(--d) infinite;
-    }
-    @keyframes px-glitch {
-        0%, 100% { opacity: 0.12; }
-        50% { opacity: 0.65; }
-    }
-    /* Darken-to-transparent gradient over the left edge of the pixel block,
-       so it blends into the button instead of cutting off sharply. */
-    .fade {
+    .dot {
         position: absolute;
-        inset: 0;
-        background: linear-gradient(to right, var(--bg-sidebar) 0%, transparent 55%);
-        pointer-events: none;
+        width: 5px;
+        height: 5px;
+        margin: -2.5px;
+        background: #ffffff;
+        border-radius: 50%;
+        offset-path: inset(0 round var(--radius));
+        animation: travel-border 4s linear infinite reverse;
+        animation-delay: calc(var(--i) * 0.04s);
+    }
+    @keyframes travel-border {
+        from { offset-distance: 0%; }
+        to { offset-distance: 100%; }
     }
     .footer {
         display: flex;

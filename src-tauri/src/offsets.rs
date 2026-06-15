@@ -27,6 +27,12 @@ pub enum FakeDataModel {
 // ─── DataModel — services ────────────────────────────────────────────────
 pub enum DataModel {
     WorkSpace = 0x168,
+    /// i64 — the universe/game id the current server belongs to.
+    GameId = 0x188,
+    /// i64 — the current place id.
+    PlaceId = 0x190,
+    /// i32 — the place version currently running.
+    PlaceVersion = 0x1AC,
     ContextActionService = 0x358,
     StarterPack = 0x368,
     StarterGui = 0x378,
@@ -87,8 +93,7 @@ pub enum Humanoid {
     Health = 0x184,
     DisplayDistance = 0x188,
     HipHeight = 0x190,
-    MaxSlope = 0x1A8,
-    WalkSpeed = 0x1CC,
+    JumpPower = 0x1A0,
 }
 
 // ─── HumanoidRootPart (and any BasePart-like instance) ───────────────────
@@ -111,4 +116,10 @@ pub enum Primitive {
     /// pointer-chain version (BasePart -> Primitive -> +0x134) is the one
     /// the ESP loop uses for non-HRP parts.
     Position = 0xEC,
+    /// u8 bool — whether the part collides. No-clip forces this to 0 on every
+    /// part of the local character so it phases through objects.
+    CanCollide = 0x1B6,
+    /// Vec3 f32 — the part's world-space size (studs). Used by the per-part
+    /// box ESP to draw a quad scaled to the real part dimensions.
+    Size = 0x1B8,
 }

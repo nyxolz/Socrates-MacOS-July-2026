@@ -24,12 +24,19 @@
         box3d: [number, number, number, number][];
         view_dir: [number, number, number, number] | null;
         skeleton: [number, number, number, number][];
+        part_boxes: [number, number][][]; // each box = 8 NDC corners
         relation: number; // 0 = enemy (full ESP), 1 = ally (green head dot)
         world: [number, number, number];
+    };
+    type EspObject = {
+        name: string;
+        box3d: [number, number][]; // 8 NDC corners
+        label: [number, number];
     };
     type EspFrame = {
         markers: Marker[];
         players: EspPlayer[];
+        objects: EspObject[];
         player_count: number;
         camera_pos: [number, number, number];
         forward: [number, number, number];
@@ -122,6 +129,75 @@
         ctx.strokeRect(x, y, w, h);
     }
 
+
+    // Per-part oriented 3-D boxes. Each box is 8 projected corners ordered by
+    // the sign bits of (sx, sy, sz): index = 4·sx + 2·sy + 1·sz.
+    // 6 faces filled semi-transparently + 12 edges stroked.
+    const PART_FACES: number[][] = [
+        [0, 1, 3, 2], // sx-
+        [4, 5, 7, 6], // sx+
+        [0, 1, 5, 4], // sy-
+        [2, 3, 7, 6], // sy+
+        [0, 2, 6, 4], // sz-
+        [1, 3, 7, 5], // sz+
+    ];
+    const PART_EDGES: [number, number][] = [
+        [0, 4], [1, 5], [2, 6], [3, 7], // X
+        [0, 2], [1, 3], [4, 6], [5, 7], // Y
+        [0, 1], [2, 3], [4, 5], [6, 7], // Z
+    ];
+    function drawPartBoxes(ctx: CanvasRenderingContext2D,
+                           boxes: [number, number][][],
+                           filled: boolean, color: string, opacity: number,
+                           border: boolean, borderColor: string) {
+        const fill = hexToRgba(color, opacity);
+        for (const box of boxes) {
+            const pts = box.map((c) => ndcToScreen(c[0], c[1]));
+            if (filled) {
+                ctx.fillStyle = fill;
+                for (const f of PART_FACES) {
+                    ctx.beginPath();
+                    ctx.moveTo(pts[f[0]].x, pts[f[0]].y);
+                    for (let i = 1; i < f.length; i++) ctx.lineTo(pts[f[i]].x, pts[f[i]].y);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+            if (border) {
+                ctx.strokeStyle = borderColor;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                for (const [a, b] of PART_EDGES) {
+                    ctx.moveTo(pts[a].x, pts[a].y);
+                    ctx.lineTo(pts[b].x, pts[b].y);
+                }
+                ctx.stroke();
+            }
+        }
+    }
+
+    // Dev overlay: 3-D wireframe box + name for every Workspace part.
+    function drawObjectEsp(ctx: CanvasRenderingContext2D,
+                           objects: { name: string; box3d: [number, number][]; label: [number, number] }[]) {
+        ctx.strokeStyle = "rgba(120, 200, 255, 0.6)";
+        ctx.lineWidth = 1;
+        for (const o of objects) {
+            if (o.box3d.length !== 8) continue;
+            const pts = o.box3d.map((c) => ndcToScreen(c[0], c[1]));
+            ctx.beginPath();
+            for (const [a, b] of PART_EDGES) {
+                ctx.moveTo(pts[a].x, pts[a].y);
+                ctx.lineTo(pts[b].x, pts[b].y);
+            }
+            ctx.stroke();
+        }
+        // Names on top, so the box lines don't cross them.
+        for (const o of objects) {
+            if (!o.name) continue;
+            const lp = ndcToScreen(o.label[0], o.label[1]);
+            drawText(ctx, o.name, lp.x, lp.y, "#cde8ff", true, 9);
+        }
+    }
 
     function drawText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number,
                       color: string, outline: boolean, size = 11) {
@@ -363,6 +439,11 @@
             const cfg = vcfg;
             const outline = cfg.outline;
 
+            // Dev "ESP all game objects": white 3-D box + name on every part.
+            if (lastFrame.objects && lastFrame.objects.length) {
+                drawObjectEsp(ctx, lastFrame.objects);
+            }
+
             for (const p of lastFrame.players) {
                 // Allies: a green "[Ally]" label above the head, no other ESP.
                 // Backend already strips the geometry, but we still skip the
@@ -378,6 +459,9 @@
                 if (cfg.tracers && p.head) {
                     drawTracer(ctx, p.head, cfg.tracers_origin,
                         cfg.tracers_color, cfg.tracers_thickness, outline);
+                }
+                if ((cfg.part_esp || cfg.part_esp_border) && p.part_boxes.length) {
+                    drawPartBoxes(ctx, p.part_boxes, cfg.part_esp, cfg.part_esp_color, cfg.part_esp_opacity, cfg.part_esp_border, cfg.part_esp_border_color);
                 }
                 if (cfg.box3d && p.box3d.length) {
                     strokeSegments(ctx, p.box3d, cfg.box3d_color, cfg.box3d_thickness, outline);

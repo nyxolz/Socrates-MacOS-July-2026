@@ -13,6 +13,7 @@ pub mod bounds;
 pub mod tracker;
 
 pub use window::setup_window_overlay;
+pub use window::set_window_sharing;
 pub use tracker::{start_window_tracker, start_mouse_tracker};
 
 /// macOS titlebar adjustment used everywhere (NDC → pixel conversion).

@@ -47,6 +47,11 @@ pub struct EspPlayer {
     pub box3d: Vec<[f32; 4]>,           // up to 12 edges
     pub view_dir: Option<[f32; 4]>,     // 1 segment
     pub skeleton: Vec<[f32; 4]>,        // segments
+    /// Per-part oriented 3-D boxes. Each entry is the 8 projected corners in
+    /// NDC (`[x, y]`), ordered by the sign bits of (sx, sy, sz) — index =
+    /// 4·sx + 2·sy + 1·sz. The front draws the 12 edges and fills the 6 faces
+    /// semi-transparently. One box per rig part, scaled to its real Size.
+    pub part_boxes: Vec<[[f32; 2]; 8]>,
     /// 0 = enemy (full ESP), 1 = ally (only a green head dot is drawn).
     /// Neutrals are never emitted into the frame.
     pub relation: u8,
@@ -54,10 +59,21 @@ pub struct EspPlayer {
     pub world: [f32; 3],
 }
 
+/// One Workspace part for the dev "ESP all game objects" overlay.
+#[derive(Serialize, Clone, Debug)]
+pub struct EspObject {
+    pub name: String,
+    /// 8 projected NDC corners (same ordering as `EspPlayer::part_boxes`).
+    pub box3d: [[f32; 2]; 8],
+    /// Name anchor in NDC (part centre).
+    pub label: [f32; 2],
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct EspFrame {
     pub markers: Vec<EspMarker>,
     pub players: Vec<EspPlayer>,
+    pub objects: Vec<EspObject>,
     pub player_count: usize,
     pub camera_pos: [f32; 3],
     /// Camera look direction (world) — radar uses its X/Z to orient "up".
@@ -135,6 +151,142 @@ fn read_look_dir(sdk: &SdkI, primitive: u64) -> [f32; 3] {
     [dir[0] / l, dir[1] / l, dir[2] / l]
 }
 
+/// Project an oriented part box to its 8 NDC corners. Reads the part's world
+/// Size (Primitive + 0x1B8), its CFrame basis (rotation columns at 0xC8,
+/// Right/Up/Back) and position (0xEC), builds the 8 oriented corners and
+/// projects each. Returns the corners ordered by the sign bits of (sx, sy, sz)
+/// — index = 4·sx + 2·sy + 1·sz. `None` if any corner is behind the camera or
+/// the part has a degenerate / absurd size (so a glitched read can't paint the
+/// whole screen).
+fn project_part_box(
+    sdk: &SdkI,
+    prim: u64,
+    view: [[f32; 4]; 4],
+    proj: [[f32; 4]; 4],
+) -> Option<[[f32; 2]; 8]> {
+    let pos = read_pos_fast(sdk, prim);
+    if !pos[0].is_finite() { return None; }
+
+    let size_off = offsets::Primitive::Size as u64;
+    let half = [
+        sdk.read::<f32>(prim + size_off) * 0.5,
+        sdk.read::<f32>(prim + size_off + 4) * 0.5,
+        sdk.read::<f32>(prim + size_off + 8) * 0.5,
+    ];
+    if !(half[0].is_finite() && half[1].is_finite() && half[2].is_finite()) { return None; }
+    if half[0] <= 0.0 && half[1] <= 0.0 && half[2] <= 0.0 { return None; }
+    if half[0] > 200.0 || half[1] > 200.0 || half[2] > 200.0 { return None; }
+
+    // CFrame rotation columns: Right (j=0), Up (j=1), Back (j=2).
+    let right = [sdk.read::<f32>(prim + 0xC8), sdk.read::<f32>(prim + 0xD4), sdk.read::<f32>(prim + 0xE0)];
+    let up    = [sdk.read::<f32>(prim + 0xCC), sdk.read::<f32>(prim + 0xD8), sdk.read::<f32>(prim + 0xE4)];
+    let back  = [sdk.read::<f32>(prim + 0xD0), sdk.read::<f32>(prim + 0xDC), sdk.read::<f32>(prim + 0xE8)];
+
+    let mut corners = [[0.0_f32; 2]; 8];
+    for bits in 0..8usize {
+        let sx = if bits & 4 != 0 { half[0] } else { -half[0] };
+        let sy = if bits & 2 != 0 { half[1] } else { -half[1] };
+        let sz = if bits & 1 != 0 { half[2] } else { -half[2] };
+        let world = [
+            pos[0] + right[0] * sx + up[0] * sy + back[0] * sz,
+            pos[1] + right[1] * sx + up[1] * sy + back[1] * sz,
+            pos[2] + right[2] * sx + up[2] * sy + back[2] * sz,
+        ];
+        // All 8 corners must project, else the box is half behind the near
+        // plane and a partial fill would look wrong — skip the whole part.
+        let n = world_to_ndc(world, view, proj)?;
+        corners[bits] = [n[0], n[1]];
+    }
+    Some(corners)
+}
+
+/// Project the oriented box of an arbitrary part (by its Primitive pointer),
+/// returning the 8 NDC corners and the centre anchor. Mirrors `project_part_box`
+/// but also hands back the projected centre for the name label.
+fn project_object_box(
+    sdk: &SdkI,
+    prim: u64,
+    view: [[f32; 4]; 4],
+    proj: [[f32; 4]; 4],
+) -> Option<([[f32; 2]; 8], [f32; 2])> {
+    let pos = read_pos_fast(sdk, prim);
+    if !pos[0].is_finite() { return None; }
+
+    let size_off = offsets::Primitive::Size as u64;
+    let half = [
+        sdk.read::<f32>(prim + size_off) * 0.5,
+        sdk.read::<f32>(prim + size_off + 4) * 0.5,
+        sdk.read::<f32>(prim + size_off + 8) * 0.5,
+    ];
+    if !(half[0].is_finite() && half[1].is_finite() && half[2].is_finite()) { return None; }
+    if half[0] <= 0.0 && half[1] <= 0.0 && half[2] <= 0.0 { return None; }
+    if half[0] > 2000.0 || half[1] > 2000.0 || half[2] > 2000.0 { return None; }
+
+    let right = [sdk.read::<f32>(prim + 0xC8), sdk.read::<f32>(prim + 0xD4), sdk.read::<f32>(prim + 0xE0)];
+    let up    = [sdk.read::<f32>(prim + 0xCC), sdk.read::<f32>(prim + 0xD8), sdk.read::<f32>(prim + 0xE4)];
+    let back  = [sdk.read::<f32>(prim + 0xD0), sdk.read::<f32>(prim + 0xDC), sdk.read::<f32>(prim + 0xE8)];
+
+    let center = world_to_ndc(pos, view, proj)?;
+    let mut corners = [[0.0_f32; 2]; 8];
+    for bits in 0..8usize {
+        let sx = if bits & 4 != 0 { half[0] } else { -half[0] };
+        let sy = if bits & 2 != 0 { half[1] } else { -half[1] };
+        let sz = if bits & 1 != 0 { half[2] } else { -half[2] };
+        let world = [
+            pos[0] + right[0] * sx + up[0] * sy + back[0] * sz,
+            pos[1] + right[1] * sx + up[1] * sy + back[1] * sz,
+            pos[2] + right[2] * sx + up[2] * sy + back[2] * sz,
+        ];
+        let n = world_to_ndc(world, view, proj)?;
+        corners[bits] = [n[0], n[1]];
+    }
+    Some((corners, [center[0], center[1]]))
+}
+
+/// Walk the Workspace tree and collect a 3-D box + name for every part, up to
+/// a hard cap. Only on-screen parts are emitted (centre inside NDC) to keep
+/// the payload and the front's draw cost bounded. BFS so shallow, visible
+/// geometry is reached before deep map detail when the budget runs out.
+fn collect_objects(
+    sdk: &SdkI,
+    workspace: u64,
+    view: [[f32; 4]; 4],
+    proj: [[f32; 4]; 4],
+) -> Vec<EspObject> {
+    use std::collections::VecDeque;
+    const MAX_OBJECTS: usize = 800;
+    const MAX_NODES: usize = 8000;
+
+    let mut out = Vec::new();
+    let mut visited = 0usize;
+    let mut queue: VecDeque<u64> = VecDeque::new();
+    queue.push_back(workspace);
+
+    while let Some(node) = queue.pop_front() {
+        if visited >= MAX_NODES || out.len() >= MAX_OBJECTS { break; }
+        for c in crate::sdk::get_children(sdk, node) {
+            if visited >= MAX_NODES || out.len() >= MAX_OBJECTS { break; }
+            visited += 1;
+
+            let prim = sdk.read::<u64>(c + offsets::BasePart::Primitive as u64);
+            if sdk.is_valid_ptr(prim) {
+                if let Some((corners, label)) = project_object_box(sdk, prim, view, proj) {
+                    // On-screen only.
+                    if label[0] >= -1.0 && label[0] <= 1.0 && label[1] >= -1.0 && label[1] <= 1.0 {
+                        out.push(EspObject {
+                            name: crate::sdk::name_of(sdk, c),
+                            box3d: corners,
+                            label,
+                        });
+                    }
+                }
+            }
+            queue.push_back(c);
+        }
+    }
+    out
+}
+
 pub fn start_esp_thread(app_handle: AppHandle) {
     thread::spawn(move || {
         loop {
@@ -161,6 +313,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     let _ = app_handle.emit("esp_frame", EspFrame {
                         markers: vec![],
                         players: vec![],
+                        objects: vec![],
                         player_count: 0,
                         camera_pos: [0.0; 3],
                         forward: [0.0, 0.0, 1.0],
@@ -252,6 +405,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                             box3d: Vec::new(),
                             view_dir: None,
                             skeleton: Vec::new(),
+                            part_boxes: Vec::new(),
                             relation: 1,
                             world: anchor,
                         });
@@ -399,6 +553,19 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     }
                 }
 
+                // Per-part boxes — a quad per valid part scaled to its real Size.
+                let mut part_boxes: Vec<[[f32; 2]; 8]> = Vec::new();
+                // Compute the boxes if either the fill OR the border is on, so
+                // the border can be drawn even with the fill disabled.
+                if visuals.part_esp || visuals.part_esp_border {
+                    for (prim, valid) in cache.parts.iter() {
+                        if !*valid { continue; }
+                        if let Some(rect) = project_part_box(&sdk, *prim, view, proj) {
+                            part_boxes.push(rect);
+                        }
+                    }
+                }
+
                 players.push(EspPlayer {
                     name: cache.name.clone(),
                     distance,
@@ -408,6 +575,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     box3d,
                     view_dir,
                     skeleton,
+                    part_boxes,
                     relation: 0,
                     world: anchor,
                 });
@@ -421,10 +589,21 @@ pub fn start_esp_thread(app_handle: AppHandle) {
             // forward the radar orients "up" to.
             let forward = [-matrix[0][2], -matrix[1][2], -matrix[2][2]];
 
+            // Dev "ESP all game objects": walk the Workspace and box every part.
+            let objects = if state.object_esp_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                match security::resolve_workspace(&sdk) {
+                    Some(ws) => collect_objects(&sdk, ws, view, proj),
+                    None => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+
             let _ = app_handle.emit("esp_frame", EspFrame {
                 markers: vec![origin],
                 player_count: players.len(),
                 players,
+                objects,
                 camera_pos: cam_pos,
                 forward,
                 fov,

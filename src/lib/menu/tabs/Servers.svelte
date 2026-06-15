@@ -8,7 +8,12 @@
     const CACHE_KEY = "socrate.places.cached";
     const LAST_KEY = "socrate.places.lastJoined";
 
+    type PlaceInfo = { place_id: number; game_id: number; place_version: number };
+
     let placeName = "...";
+    let placeInfo: PlaceInfo | null = null;
+    let gameName = "";
+    let gameNameForId: number | null = null; // game id gameName was resolved for
     let lastJoinedId: string | null = null;
     let cached: CachedPlace[] = [];
     let inputId = "";
@@ -34,6 +39,22 @@
         catch { placeName = "(not attached)"; }
         try { ramBytes = await invoke<number>("get_self_ram_bytes"); }
         catch { ramBytes = 0; }
+        try { placeInfo = await invoke<PlaceInfo | null>("get_place_info"); }
+        catch { placeInfo = null; }
+
+        // Resolve the public game title from the Game ID (universe id). Only
+        // re-fetch when the id actually changes so we don't spam the API.
+        const gid = placeInfo?.game_id ?? 0;
+        if (gid > 0 && gid !== gameNameForId) {
+            try {
+                const n = await invoke<string | null>("get_game_name", { gameId: gid });
+                gameName = n ?? "";
+                gameNameForId = gid;
+            } catch { gameName = ""; }
+        } else if (gid <= 0) {
+            gameName = "";
+            gameNameForId = null;
+        }
 
         // If we know the last joined id and the place name updated to a real
         // value, refresh that entry's display name so the cache stays useful.
@@ -111,12 +132,20 @@
     <div class="col">
         <Section title="Current Place" icon="server" active={placeName !== "..." && !placeName.startsWith("(")}>
             <div class="row">
-                <span class="lbl">Name</span>
-                <span class="val">{placeName}</span>
+                <span class="lbl">Game</span>
+                <span class="val">{gameName || placeName}</span>
             </div>
             <div class="row">
                 <span class="lbl">Place ID</span>
-                <span class="val mono">{lastJoinedId ?? "—"}</span>
+                <span class="val mono">{placeInfo && placeInfo.place_id > 0 ? placeInfo.place_id : (lastJoinedId ?? "—")}</span>
+            </div>
+            <div class="row">
+                <span class="lbl">Game ID</span>
+                <span class="val mono">{placeInfo && placeInfo.game_id > 0 ? placeInfo.game_id : "—"}</span>
+            </div>
+            <div class="row">
+                <span class="lbl">Version</span>
+                <span class="val mono">{placeInfo && placeInfo.place_version > 0 ? placeInfo.place_version : "—"}</span>
             </div>
             <div class="ram mono">socrate ram: {fmtRam(ramBytes)}</div>
         </Section>

@@ -332,26 +332,40 @@ fn is_ignored_character(name: &str) -> bool {
     matches!(name, "Dummy" | "DPS Dummy")
 }
 
+/// `false` once a character's `Health` drops to (or below) 0 — a dead
+/// character is dropped from the cache so ESP/aimbot stop tracking it.
+/// Unknown humanoid (`0`, e.g. HRP+Head/Health-only rigs) is treated as alive.
+fn is_alive(sdk: &SdkI, humanoid_addr: u64) -> bool {
+    if !sdk.is_valid_ptr(humanoid_addr) { return true; }
+    sdk.read::<f32>(humanoid_addr + offsets::Humanoid::Health as u64) > 0.0
+}
+
 /// `(instance, humanoid_ptr)` if `instance` is a character, else `None`.
 ///
 /// A node is a character when it owns a `Humanoid`, or — for custom rigs that
-/// lack one — when it owns **both** a `HumanoidRootPart` *and* a `Head`.
+/// lack one — when it owns **both** a `HumanoidRootPart` *and* a `Head`, or
+/// when it owns a `Health` child (some custom rigs expose Health directly on
+/// the model instead of via a `Humanoid`).
 /// Requiring the `Head` alongside the HRP filters out stray models/parts that
 /// happen to carry a lone `HumanoidRootPart` without being a real character.
-/// `humanoid_ptr` is 0 when only the HRP+Head pair was found —
-/// `build_char_cache` then reports health as unknown.
+/// `humanoid_ptr` is 0 when only the HRP+Head pair or the `Health` child was
+/// found — `build_char_cache` then reports health as unknown.
 fn character_marker(
     sdk: &SdkI,
     instance: u64,
     humanoid_name: &str,
     hrp_name: &str,
     head_name: &str,
+    health_name: &str,
 ) -> Option<u64> {
     let humanoid = find_child_fast(sdk, instance, humanoid_name);
     if sdk.is_valid_ptr(humanoid) { return Some(humanoid); }
     if sdk.is_valid_ptr(find_child_fast(sdk, instance, hrp_name))
         && sdk.is_valid_ptr(find_child_fast(sdk, instance, head_name))
     {
+        return Some(0);
+    }
+    if sdk.is_valid_ptr(find_child_fast(sdk, instance, health_name)) {
         return Some(0);
     }
     None
@@ -383,13 +397,14 @@ fn character_marker(
 ///
 /// Bounded by depth / per-node / total-node caps so a huge Workspace can't
 /// stall the cache thread.
-pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec<CharCache>, Vec<u64>, u64, u64) {
+pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str, player_names: &std::collections::HashSet<String>) -> (Vec<CharCache>, Vec<u64>, u64, u64) {
     const MAX_DEPTH: u32 = 8;
     const MAX_TOTAL_NODES: usize = 6000;
 
     let humanoid_name = obfstr!("Humanoid").to_string();
     let hrp_name = obfstr!("HumanoidRootPart").to_string();
     let head_name = obfstr!("Head").to_string();
+    let health_name = obfstr!("Health").to_string();
 
     let mut caches = Vec::new();
     let mut containers: Vec<u64> = Vec::new();
@@ -408,9 +423,13 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
             if total >= MAX_TOTAL_NODES { break; }
             total += 1;
 
-            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name, &head_name) {
+            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name, &head_name, &health_name) {
                 let cname = read_name_fast(sdk, c);
-                if !is_ignored_character(&cname) {
+                // Real-player gate: when we know the Players roster, a rig whose
+                // name isn't on it is an NPC / dummy / mob — skip it entirely
+                // (don't even remember its container).
+                let is_real_player = player_names.is_empty() || player_names.contains(&cname);
+                if !is_ignored_character(&cname) && is_real_player {
                     // Remember the parent path even if the only character here is
                     // ourselves — it's still where players will appear.
                     if !containers.contains(&node) { containers.push(node); }
@@ -421,8 +440,10 @@ pub fn discover_characters(sdk: &SdkI, workspace: u64, local_name: &str) -> (Vec
                         local_parent = node;
                         local_humanoid = humanoid;
                     } else if local_name.is_empty() || cname != local_name {
-                        if let Some(cache) = build_char_cache(sdk, c, humanoid) {
-                            caches.push(cache);
+                        if is_alive(sdk, humanoid) {
+                            if let Some(cache) = build_char_cache(sdk, c, humanoid) {
+                                caches.push(cache);
+                            }
                         }
                     }
                 }
@@ -454,19 +475,24 @@ pub fn effective_relation(manual: u8, team_check: bool, cache_parent: u64, local
 /// are checked for the character marker — no tree walk. Stale pointers (e.g.
 /// after a new game) are skipped via `is_valid_ptr` and simply yield nothing,
 /// which signals the caller to fall back to a full `discover_characters`.
-pub fn discover_in_containers(sdk: &SdkI, containers: &[u64], local_name: &str) -> Vec<CharCache> {
+pub fn discover_in_containers(sdk: &SdkI, containers: &[u64], local_name: &str, player_names: &std::collections::HashSet<String>) -> Vec<CharCache> {
     let humanoid_name = obfstr!("Humanoid").to_string();
     let hrp_name = obfstr!("HumanoidRootPart").to_string();
     let head_name = obfstr!("Head").to_string();
+    let health_name = obfstr!("Health").to_string();
 
     let mut caches = Vec::new();
     for &container in containers {
         if !sdk.is_valid_ptr(container) { continue; }
         for c in get_children(sdk, container).into_iter().take(MAX_CHILDREN_PER_NODE) {
-            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name, &head_name) {
+            if let Some(humanoid) = character_marker(sdk, c, &humanoid_name, &hrp_name, &head_name, &health_name) {
                 let cname = read_name_fast(sdk, c);
                 if is_ignored_character(&cname) { continue; }
+                // Real-player gate (see discover_characters): reject rigs that
+                // aren't in the Players roster when we know it.
+                if !player_names.is_empty() && !player_names.contains(&cname) { continue; }
                 if !local_name.is_empty() && cname == local_name { continue; }
+                if !is_alive(sdk, humanoid) { continue; }
                 if let Some(cache) = build_char_cache(sdk, c, humanoid) {
                     caches.push(cache);
                 }
@@ -501,6 +527,29 @@ pub fn resolve_local_player_name(sdk: &SdkI) -> String {
     String::new()
 }
 
+/// Names of every child of the `Players` service — i.e. the set of real
+/// players currently in the server (the `Player` instances Roblox owns, not
+/// their Workspace characters). Character discovery uses this to reject any
+/// humanoid rig whose name isn't a real player (NPCs, dummies, mob models):
+/// if a character's `Name` isn't in this set, it isn't a player, so it never
+/// reaches ESP / aimbot.
+///
+/// Returns an empty set when `Players` can't be resolved; callers treat an
+/// empty set as "unknown" and skip the filter rather than hiding everyone.
+pub fn resolve_player_names(sdk: &SdkI) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let dm = match security::resolve_data_model(sdk) {
+        Some(v) => v, None => return out,
+    };
+    let players = find_child_fast(sdk, dm, obfstr!("Players").as_ref());
+    if !sdk.is_valid_ptr(players) { return out; }
+    for child in get_children(sdk, players) {
+        let name = read_name_fast(sdk, child);
+        if !name.is_empty() { out.insert(name); }
+    }
+    out
+}
+
 // ─── Off-thread cache rebuild ─────────────────────────────────────────
 
 /// Refreshes `AppState.char_caches`. The ESP loop only ever clones the
@@ -523,17 +572,33 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
         loop {
             let mut empty = true;
             let state = app_handle.state::<AppState>();
+
+            // "Reset ESP" requested: forget remembered containers and the live
+            // cache, then fall through to a full cold-start walk this tick.
+            if state.esp_reset_requested.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                known_containers.clear();
+                last_full_walk = Instant::now() - Duration::from_secs(60);
+                *state.char_caches.lock().unwrap() = Arc::new(Vec::new());
+                state.local_parent.store(0, std::sync::atomic::Ordering::Relaxed);
+                state.local_humanoid_addr.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+
             let sdk_opt = state.sdk.lock().unwrap().clone();
             if let Some(sdk) = sdk_opt {
                 if let Some(workspace) = resolve_workspace(&sdk) {
                     let local_name = resolve_local_player_name(&sdk);
                     *state.local_player_name.lock().unwrap() = local_name.clone();
 
+                    // Roster of real players (children of the Players service):
+                    // any humanoid rig whose name isn't here is an NPC/dummy and
+                    // is rejected from the cache (and thus from ESP/aimbot).
+                    let player_names = resolve_player_names(&sdk);
+
                     // Cheap path first: rescan remembered containers.
                     let mut caches = if known_containers.is_empty() {
                         Vec::new()
                     } else {
-                        discover_in_containers(&sdk, &known_containers, &local_name)
+                        discover_in_containers(&sdk, &known_containers, &local_name, &player_names)
                     };
 
                     // Full walk when the cheap path found nothing (first run,
@@ -541,7 +606,7 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
                     // newly-added containers are still discovered.
                     let refresh_due = last_full_walk.elapsed() >= Duration::from_secs(4);
                     if caches.is_empty() || refresh_due {
-                        let (full, containers, local_parent, local_humanoid) = discover_characters(&sdk, workspace, &local_name);
+                        let (full, containers, local_parent, local_humanoid) = discover_characters(&sdk, workspace, &local_name, &player_names);
                         last_full_walk = Instant::now();
                         if local_parent != 0 {
                             state.local_parent.store(local_parent, std::sync::atomic::Ordering::Relaxed);
@@ -605,32 +670,65 @@ fn resolve_workspace(sdk: &SdkI) -> Option<u64> {
 }
 
 /// Misc tab — continuously re-applies the enabled overrides
-/// (WalkSpeed / HipHeight / DisplayDistance / MaxSlope) to our own
+/// (HipHeight / JumpPower / DisplayDistance / Fly) to our own
 /// `Humanoid`. Re-writing every tick (rather than once) keeps the value
 /// stuck even when Roblox's own scripts reset it (e.g. respawn, sprint
-/// scripts toggling WalkSpeed back).
+/// scripts toggling values back).
+/// Force CanCollide = false on every part of the local character. The
+/// character is the parent of the Humanoid; each BasePart child exposes its
+/// Primitive at `+0x138`, and CanCollide is the u8 at `Primitive + 0x1B6`.
+/// A finite, plausible `Size` read off the Primitive is used to tell real
+/// parts from non-part children (Humanoid, scripts, …) so we never poke a
+/// stray byte.
+fn apply_noclip(sdk: &SdkI, humanoid: u64) {
+    let character = sdk.read::<u64>(humanoid + Instance::Parent as u64);
+    if !sdk.is_valid_ptr(character) { return; }
+    for child in get_children(sdk, character) {
+        let prim = sdk.read::<u64>(child + offsets::BasePart::Primitive as u64);
+        if !sdk.is_valid_ptr(prim) { continue; }
+        // Sanity-gate on Size so we only touch genuine parts.
+        let sx = sdk.read::<f32>(prim + offsets::Primitive::Size as u64);
+        if !sx.is_finite() || sx <= 0.0 || sx > 1000.0 { continue; }
+        sdk.write::<u8>(prim + offsets::Primitive::CanCollide as u64, 0);
+    }
+}
+
 pub fn start_misc_thread(app_handle: AppHandle) {
+    let mut last_tick = Instant::now();
+    // Extra HipHeight accumulated while the fly bind is held — climbs while
+    // held, resets to 0 (back to `cfg.hip_height`) once released.
+    let mut fly_offset: f32 = 0.0;
     thread::spawn(move || loop {
+        let dt = last_tick.elapsed().as_secs_f32();
+        last_tick = Instant::now();
         let state = app_handle.state::<AppState>();
         let sdk_opt = state.sdk.lock().unwrap().clone();
         if let Some(sdk) = sdk_opt {
             let humanoid = state.local_humanoid_addr.load(std::sync::atomic::Ordering::Relaxed);
             if sdk.is_valid_ptr(humanoid) {
                 let cfg = state.misc_cfg.lock().unwrap().clone();
-                if cfg.walk_speed_enabled {
-                    sdk.write::<f32>(humanoid + offsets::Humanoid::WalkSpeed as u64, cfg.walk_speed);
-                }
-                if cfg.hip_height_enabled {
-                    sdk.write::<f32>(humanoid + offsets::Humanoid::HipHeight as u64, cfg.hip_height);
+                if cfg.jump_power_enabled {
+                    sdk.write::<f32>(humanoid + offsets::Humanoid::JumpPower as u64, cfg.jump_power);
                 }
                 if cfg.display_distance_enabled {
                     sdk.write::<f32>(humanoid + offsets::Humanoid::DisplayDistance as u64, cfg.display_distance);
                 }
-                if cfg.max_slope_enabled {
-                    sdk.write::<f32>(humanoid + offsets::Humanoid::MaxSlope as u64, cfg.max_slope);
+
+                if cfg.fly_enabled && crate::input::is_held(&cfg.fly_keybind) {
+                    fly_offset += cfg.fly_speed * dt;
+                } else {
+                    fly_offset = 0.0;
+                }
+
+                if cfg.hip_height_enabled || fly_offset > 0.0 {
+                    sdk.write::<f32>(humanoid + offsets::Humanoid::HipHeight as u64, cfg.hip_height + fly_offset);
+                }
+
+                if cfg.noclip_enabled {
+                    apply_noclip(&sdk, humanoid);
                 }
             }
         }
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(16));
     });
 }

@@ -176,7 +176,14 @@ pub struct VisualsCfg {
     pub health_bar: bool,
     pub health_bar_color: String,
 
-    pub team_check: bool,
+    // Per-part box ESP — a semi-transparent quad scaled to each part's real
+    // Size, drawn over every part of the character.
+    pub part_esp: bool,
+    pub part_esp_color: String,
+    pub part_esp_opacity: f32,
+    pub part_esp_border: bool,
+    pub part_esp_border_color: String,
+
     pub show_self: bool,
     pub max_distance: f32,
     pub min_distance: f32,
@@ -226,7 +233,11 @@ impl Default for VisualsCfg {
             health_offset_y: 16.0,
             health_bar: false,
             health_bar_color: "#ffffff".into(),
-            team_check: false,
+            part_esp: false,
+            part_esp_color: "#ffffff".into(),
+            part_esp_opacity: 0.25,
+            part_esp_border: true,
+            part_esp_border_color: "#ffffff".into(),
             show_self: false,
             max_distance: 1500.0,
             min_distance: 3.0,
@@ -237,27 +248,34 @@ impl Default for VisualsCfg {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct MiscCfg {
-    pub walk_speed_enabled: bool,
-    pub walk_speed: f32,
     pub hip_height_enabled: bool,
     pub hip_height: f32,
+    pub jump_power_enabled: bool,
+    pub jump_power: f32,
     pub display_distance_enabled: bool,
     pub display_distance: f32,
-    pub max_slope_enabled: bool,
-    pub max_slope: f32,
+    pub fly_enabled: bool,
+    pub fly_keybind: String,
+    /// HipHeight gained per second while the fly bind is held.
+    pub fly_speed: f32,
+    /// No-clip: continuously force CanCollide = false on the local character's
+    /// parts so it passes through walls / objects.
+    pub noclip_enabled: bool,
 }
 
 impl Default for MiscCfg {
     fn default() -> Self {
         Self {
-            walk_speed_enabled: false,
-            walk_speed: 16.0,
             hip_height_enabled: false,
             hip_height: 2.0,
+            jump_power_enabled: false,
+            jump_power: 50.0,
             display_distance_enabled: false,
             display_distance: 100.0,
-            max_slope_enabled: false,
-            max_slope: 89.0,
+            fly_enabled: false,
+            fly_keybind: String::new(),
+            fly_speed: 5.0,
+            noclip_enabled: false,
         }
     }
 }
@@ -323,7 +341,7 @@ pub struct AppState {
 
     /// Humanoid instance addr of the LocalPlayer's character, resolved on
     /// each full character walk. Used by the Misc tab to write WalkSpeed,
-    /// HipHeight, DisplayDistance and MaxSlope to our own character. 0 until
+    /// HipHeight and DisplayDistance to our own character. 0 until
     /// resolved or while dead/respawning.
     pub local_humanoid_addr: AtomicU64,
 
@@ -337,6 +355,16 @@ pub struct AppState {
     /// is treated as enemy), `1` = ally, `2` = neutral. Enemies get aimbot +
     /// full ESP; allies get only a green head dot; neutrals are ignored.
     pub player_relations: Mutex<HashMap<String, u8>>,
+
+    /// Set by the "Reset ESP" button. The cache thread sees it, drops its
+    /// remembered containers and the current cache, and does a fresh full
+    /// Workspace walk — exactly the cold-start path, as if Socrate just
+    /// relaunched. Cleared back to `false` once the reset is consumed.
+    pub esp_reset_requested: AtomicBool,
+
+    /// Dev tab "ESP all game objects": when set, the ESP thread walks the
+    /// Workspace and emits a 3-D box + name for every part it finds (capped).
+    pub object_esp_enabled: AtomicBool,
 }
 
 impl Default for AppState {
@@ -356,6 +384,8 @@ impl Default for AppState {
             misc_cfg: Mutex::new(MiscCfg::default()),
             spectate_target: Mutex::new(0),
             player_relations: Mutex::new(HashMap::new()),
+            esp_reset_requested: AtomicBool::new(false),
+            object_esp_enabled: AtomicBool::new(false),
         }
     }
 }

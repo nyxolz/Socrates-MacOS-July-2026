@@ -121,7 +121,7 @@ fn show_roblox_missing_dialog() -> bool {
     use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
     let res = MessageDialog::new()
         .set_title("Error")
-        .set_description("Roblox must be opened first.")
+        .set_description("Roblox must be opened first. Also make sure Roblox is visible on your screen, then click Retry.")
         .set_level(MessageLevel::Warning)
         .set_buttons(MessageButtons::OkCancelCustom("Retry".into(), "Quit".into()))
         .show();
@@ -136,11 +136,43 @@ fn roblox_running() -> bool {
     false
 }
 
+/// If a Roblox process is running but has no on-screen window (minimized /
+/// hidden), unhide it and bring it to the front so the user can see it.
+#[cfg(target_os = "macos")]
+fn bring_roblox_to_front() {
+    use cocoa::base::{id, nil};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let apps: id = msg_send![workspace, runningApplications];
+        let count: usize = msg_send![apps, count];
+        for i in 0..count {
+            let app: id = msg_send![apps, objectAtIndex: i];
+            let name: id = msg_send![app, localizedName];
+            if name == nil { continue; }
+            let utf8: *const i8 = msg_send![name, UTF8String];
+            if utf8.is_null() { continue; }
+            let name_str = std::ffi::CStr::from_ptr(utf8).to_string_lossy();
+            if name_str.contains("Roblox") {
+                let _: () = msg_send![app, unhide];
+                let _: bool = msg_send![app, activateWithOptions: 1u64 << 1]; // NSApplicationActivateIgnoringOtherApps
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bring_roblox_to_front() {}
+
 /// Blocks until Roblox is found. Returns `false` if the user clicks Quit
 /// — caller should `exit(0)` in that case (no overlay should ever appear).
 fn gate_on_roblox() -> bool {
     while !roblox_running() {
         if !show_roblox_missing_dialog() { return false; }
+        // User clicked Retry — if Roblox is open but just hidden/minimized,
+        // bring it on screen before re-checking.
+        bring_roblox_to_front();
     }
     true
 }
@@ -208,6 +240,12 @@ pub fn run() {
             commands::get_spectate_target,
             commands::set_player_relation,
             commands::get_place_name,
+            commands::get_place_info,
+            commands::get_game_name,
+            commands::set_stream_proof,
+            commands::reset_esp,
+            commands::dev_players_children,
+            commands::set_object_esp,
             commands::join_place,
             commands::get_instance_tree,
             commands::get_avatar_url,

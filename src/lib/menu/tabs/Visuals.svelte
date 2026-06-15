@@ -46,6 +46,19 @@
                 min={0.5} max={5} step={0.1} format={(v) => v.toFixed(1)} />
         </Section>
 
+        <Section title="Chams Visual" icon="package" active={$visuals.part_esp}>
+            <div class="row">
+                <Toggle bind:checked={$visuals.part_esp} label="Enabled" />
+                <ColorPicker bind:value={$visuals.part_esp_color} />
+            </div>
+            <div class="row">
+                <Toggle bind:checked={$visuals.part_esp_border} label="Border" />
+                <ColorPicker bind:value={$visuals.part_esp_border_color} />
+            </div>
+            <Slider label="Opacity" bind:value={$visuals.part_esp_opacity}
+                min={0.05} max={1} step={0.05} format={(v) => v.toFixed(2)} />
+        </Section>
+
         <Section title="View direction" icon="compass" active={$visuals.view_dir}>
             <div class="row">
                 <Toggle bind:checked={$visuals.view_dir} label="Enabled" />
@@ -101,10 +114,6 @@
                 <Toggle bind:checked={$visuals.health_bar} label="Bar" />
                 <ColorPicker bind:value={$visuals.health_bar_color} />
             </div>
-        </Section>
-
-        <Section title="Filters" icon="filter">
-            <Toggle bind:checked={$visuals.team_check} label="Team check" />
         </Section>
 
         <Section title="Radar" icon="compass" active={$visuals.radar}>

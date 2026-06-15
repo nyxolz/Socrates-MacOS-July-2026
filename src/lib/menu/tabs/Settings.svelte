@@ -1,6 +1,7 @@
 <script lang="ts">
     import Section from "../controls/Section.svelte";
-    import { localVersion, remoteVersion, lastVersionCheck, updateAvailable } from "../stores";
+    import Toggle from "../controls/Toggle.svelte";
+    import { localVersion, remoteVersion, lastVersionCheck, updateAvailable, menuOptions } from "../stores";
 
     const UPDATE_CMD = "curl -fsSL usesocrate.xyz/luncher.sh | sh";
     let copied = false;
@@ -47,6 +48,14 @@
         {:else if $localVersion !== "…" && $remoteVersion !== "…"}
             <div class="muted">You're on the latest build.</div>
         {/if}
+    </Section>
+
+    <Section title="Privacy" icon="eye" active={$menuOptions.stream_proof}>
+        <Toggle bind:checked={$menuOptions.stream_proof} label="Stream proof" />
+        <div class="muted">
+            Hides the overlay from screen capture &amp; sharing (OBS, QuickTime,
+            Discord share). Doesn't hide it from your own eyes.
+        </div>
     </Section>
 </div>
 

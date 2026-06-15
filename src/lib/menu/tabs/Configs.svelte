@@ -94,6 +94,19 @@
         }
     }
 
+    async function doCopy() {
+        const cfg = exportCurrentConfig();
+        const content = JSON.stringify(cfg, null, 2);
+        try {
+            await navigator.clipboard.writeText(content);
+            status = "config copied to clipboard";
+            toast("Config copied");
+        } catch (e) {
+            status = `copy failed: ${e}`;
+            toast("Copy failed");
+        }
+    }
+
     function pickImport() {
         fileInput?.click();
     }
@@ -125,6 +138,7 @@
             <button class="tab" class:active={view === "browse"} on:click={() => (view = "browse")}>Browse</button>
         </div>
         <div class="actions">
+            <Button label="Copy my configs" icon="copy" onclick={doCopy} />
             <Button label="By created date" icon="calendar" onclick={() => (sortDesc = !sortDesc)} />
             <Button label="Create new" icon="plus" primary onclick={() => (showAddPanel = !showAddPanel)} />
         </div>

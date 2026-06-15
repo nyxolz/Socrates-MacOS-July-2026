@@ -152,16 +152,26 @@ pub fn export_config_to_desktop(name: String, content: String) -> Result<String,
 
 // ─── Offset health check for the Output tab ─────────────────────────────
 
-/// Returns `true` iff we can chain `Roblox.base → FakeDataModel → DataModel
-/// → Workspace` and the resulting instance reads back the name "Workspace"
-/// (which proves the offset table is still valid for this Roblox build).
+/// Returns `true` iff the offset table still matches this Roblox build. The
+/// check is one pass: the DataModel chain must resolve, its `StarterGui`
+/// service slot must read back the name "StarterGui", and a live character in
+/// the cache must expose a child named "Humanoid".
 #[tauri::command]
 pub fn diag_check(state: State<AppState>) -> bool {
     let sdk = match state.sdk.lock().unwrap().clone() { Some(s) => s, None => return false };
     let dm = match security::resolve_data_model(&sdk) { Some(v) => v, None => return false };
-    let ws = sdk.read::<u64>(dm + offsets::DataModel::WorkSpace as u64);
-    if !sdk.is_valid_ptr(ws) { return false; }
-    sdk::name_of(&sdk, ws) == obfstr!("Workspace")
+
+    // StarterGui — fixed DataModel offset, validated by name.
+    let sg = sdk.read::<u64>(dm + offsets::DataModel::StarterGui as u64);
+    if !sdk.is_valid_ptr(sg) { return false; }
+    if sdk::name_of(&sdk, sg) != obfstr!("StarterGui") { return false; }
+
+    // Humanoid — name check off a live character in the cache.
+    let caches = state.char_caches.lock().unwrap().clone();
+    match caches.iter().find(|c| sdk.is_valid_ptr(c.humanoid_addr)) {
+        Some(c) => sdk::name_of(&sdk, c.humanoid_addr) == obfstr!("Humanoid"),
+        None => false,
+    }
 }
 
 // ─── Player List + Spectate ──────────────────────────────────────────────
@@ -277,6 +287,74 @@ pub fn get_place_name(state: State<AppState>) -> String {
     };
     let name = sdk::name_of(&sdk, dm);
     if name.is_empty() { "(no place)".into() } else { name }
+}
+
+/// Live place identifiers read straight off the DataModel struct.
+#[derive(Serialize, Clone)]
+pub struct PlaceInfo {
+    pub place_id: i64,
+    pub game_id: i64,
+    pub place_version: i32,
+}
+
+/// Read the current place id (`DataModel + 0x190`), game id (`+ 0x188`) and
+/// place version (`+ 0x1ac`) from the attached Roblox process.
+#[tauri::command]
+pub fn get_place_info(state: State<AppState>) -> Option<PlaceInfo> {
+    let sdk = state.sdk.lock().unwrap().clone()?;
+    let dm = security::resolve_data_model(&sdk)?;
+    Some(PlaceInfo {
+        place_id: sdk.read::<i64>(dm + offsets::DataModel::PlaceId as u64),
+        game_id: sdk.read::<i64>(dm + offsets::DataModel::GameId as u64),
+        place_version: sdk.read::<i32>(dm + offsets::DataModel::PlaceVersion as u64),
+    })
+}
+
+/// Toggle stream-proofing on the overlay window. When `enabled`, the window
+/// is excluded from screen capture / sharing (OBS, QuickTime, Discord share,
+/// …) so the cheat UI never shows up in a recording. Backed by the Settings
+/// toggle; applied once on launch with the persisted value.
+#[tauri::command]
+pub fn set_stream_proof(enabled: bool, window: tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    unsafe { crate::overlay::set_window_sharing(&window, enabled); }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (enabled, window);
+}
+
+/// "Reset ESP": ask the cache thread to drop everything and re-discover
+/// players from scratch — same as a fresh Socrate launch. Doesn't touch any
+/// visual settings.
+#[tauri::command]
+pub fn reset_esp(state: State<AppState>) {
+    state.esp_reset_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+// ─── Dev tab ─────────────────────────────────────────────────────────────
+
+/// Toggle the "ESP all game objects" dev overlay (3-D box + name on every
+/// Workspace part). Heavy — capped backend-side.
+#[tauri::command]
+pub fn set_object_esp(state: State<AppState>, enabled: bool) {
+    state.object_esp_enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// List the name of every direct child of the `Players` service. Backs the
+/// (code-gated) Dev tab — handy for eyeballing who the game registers.
+#[tauri::command]
+pub fn dev_players_children(state: State<AppState>) -> Vec<String> {
+    let sdk = state.sdk.lock().unwrap().clone();
+    let sdk = match sdk { Some(s) => s, None => return Vec::new() };
+    let dm = match security::resolve_data_model(&sdk) {
+        Some(v) => v, None => return Vec::new(),
+    };
+    let players = find_child_fast(&sdk, dm, obfstr!("Players").as_ref());
+    if !sdk.is_valid_ptr(players) { return Vec::new(); }
+    sdk::get_children(&sdk, players)
+        .into_iter()
+        .map(|c| sdk::name_of(&sdk, c))
+        .filter(|n| !n.is_empty())
+        .collect()
 }
 
 /// Launch the Roblox `roblox://placeId=…` URL via the macOS `open` command.
@@ -417,6 +495,29 @@ pub async fn get_avatar_url(username: String) -> Result<Option<String>, String> 
     Ok(r2["data"]
         .get(0)
         .and_then(|d| d["imageUrl"].as_str())
+        .map(|s| s.to_string()))
+}
+
+/// Resolve a Roblox **Universe ID** (the `GameId` we read off the DataModel)
+/// to the public game title. Runs server-side for the same CORS reason as
+/// `get_avatar_url` — the games endpoint sends no `Access-Control-Allow-Origin`.
+///
+/// `https://games.roblox.com/v1/games?universeIds={id}` → `data[0].name`.
+/// No auth needed. Returns `None` if the id is invalid or the game is gated.
+#[tauri::command]
+pub async fn get_game_name(game_id: i64) -> Result<Option<String>, String> {
+    if game_id <= 0 { return Ok(None); }
+
+    let client = reqwest::Client::builder().build().map_err(|e| e.to_string())?;
+    let url = format!("https://games.roblox.com/v1/games?universeIds={}", game_id);
+    let r: serde_json::Value = client
+        .get(&url)
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+
+    Ok(r["data"]
+        .get(0)
+        .and_then(|d| d["name"].as_str())
         .map(|s| s.to_string()))
 }
 
