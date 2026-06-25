@@ -136,6 +136,24 @@
             <Toggle bind:checked={$visuals.outline} label="Black outline" />
         </Section>
 
+        <Section title="Bullet Tracer" icon="activity" active={$visuals.bullet_tracer}>
+            <Toggle bind:checked={$visuals.bullet_tracer} label="Bullet Tracer" />
+            <div class="row">
+                <span class="lbl">Color</span>
+                <ColorPicker bind:value={$visuals.bullet_tracer_color} />
+            </div>
+            <Slider label="Brightness" bind:value={$visuals.bullet_tracer_brightness}
+                min={0.2} max={3} step={0.05} format={(v) => v.toFixed(2) + "x"} />
+        </Section>
+
+        <Section title="Crosshair" icon="crosshair" active={$visuals.crosshair}>
+            <Toggle bind:checked={$visuals.crosshair} label="Crosshair" />
+            <div class="row">
+                <span class="lbl">Color</span>
+                <ColorPicker bind:value={$visuals.crosshair_color} />
+            </div>
+        </Section>
+
     </div>
 </div>
 

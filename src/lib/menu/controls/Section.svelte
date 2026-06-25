@@ -64,6 +64,13 @@
     .ic, .title {
         transition: color 160ms var(--ease);
     }
+    .ic, .dot {
+        transition: transform 160ms var(--ease), color 160ms var(--ease), background 160ms var(--ease);
+    }
+    .section:hover .ic,
+    .section:hover .dot {
+        transform: scale(1.18);
+    }
     .title {
         font-weight: 600;
         font-size: 11.5px;

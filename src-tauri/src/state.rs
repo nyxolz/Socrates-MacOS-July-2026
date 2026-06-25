@@ -187,6 +187,10 @@ pub struct VisualsCfg {
     pub show_self: bool,
     pub max_distance: f32,
     pub min_distance: f32,
+
+    pub bullet_tracer: bool,
+    pub bullet_tracer_color: String,
+    pub bullet_tracer_brightness: f32,
 }
 
 impl Default for VisualsCfg {
@@ -241,6 +245,9 @@ impl Default for VisualsCfg {
             show_self: false,
             max_distance: 1500.0,
             min_distance: 3.0,
+            bullet_tracer: false,
+            bullet_tracer_color: "#ffffff".into(),
+            bullet_tracer_brightness: 1.0,
         }
     }
 }
@@ -365,6 +372,28 @@ pub struct AppState {
     /// Dev tab "ESP all game objects": when set, the ESP thread walks the
     /// Workspace and emits a 3-D box + name for every part it finds (capped).
     pub object_esp_enabled: AtomicBool,
+
+    /// char_addr of the player the aimbot is currently locked onto. 0 = none.
+    /// Written by the aimbot thread every tick; read by the ESP thread for the
+    /// Bullet Tracer feature.
+    pub aimbot_locked_target: AtomicU64,
+
+    /// Visuals "Bullet Tracer": local-player-only traces with timestamp for
+    /// fade. `(fired_at, [origin_world, target_world])` — both re-projected each frame.
+    pub bullet_vis_traces: Mutex<Vec<(std::time::Instant, [[f32; 3]; 2])>>,
+
+    /// Total bullet_vis traces ever pushed (never decremented). The frontend
+    /// compares against its own last value to know exactly how many new hits
+    /// arrived this frame — immune to traces expiring simultaneously.
+    pub bullet_vis_hit_count: AtomicU64,
+
+    /// Work.ink key gate — the *authoritative* server-truth switch. Every
+    /// feature thread (ESP, aimbot, misc, spectate) checks this before doing
+    /// anything; the frontend hiding the menu behind `KeyGate` is not enough
+    /// on its own, since `bridge.ts` pushes the last persisted config to the
+    /// backend on every launch regardless of what's currently rendered. False
+    /// until the frontend calls `set_key_unlocked(true)` with a validated key.
+    pub key_unlocked: AtomicBool,
 }
 
 impl Default for AppState {
@@ -386,6 +415,10 @@ impl Default for AppState {
             player_relations: Mutex::new(HashMap::new()),
             esp_reset_requested: AtomicBool::new(false),
             object_esp_enabled: AtomicBool::new(false),
+            aimbot_locked_target: AtomicU64::new(0),
+            bullet_vis_traces: Mutex::new(Vec::new()),
+            bullet_vis_hit_count: AtomicU64::new(0),
+            key_unlocked: AtomicBool::new(false),
         }
     }
 }

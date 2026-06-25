@@ -286,12 +286,30 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
         loop {
           let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         loop {
-            thread::sleep(Duration::from_millis(0));
-
+            // `sleep(0)` doesn't actually sleep — it just yields, so the loop
+            // used to spin at full speed (pegging a core) all the time, even
+            // with the aimbot fully disabled. Sleep ~1ms while actively
+            // aiming/triggering (keeps ~1000Hz, plenty for smooth tracking)
+            // and back off to 8ms otherwise so idle CPU use drops to near
+            // zero without harming responsiveness when the bind is held.
             let state = app_handle.state::<AppState>();
+
+            // Work.ink key gate: hard kill switch, checked before any config
+            // read. Holds even if a stale "enabled" config from a previous
+            // (validated) session was already pushed to the backend by
+            // bridge.ts on this launch.
+            if !state.key_unlocked.load(std::sync::atomic::Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+
             let cfg = state.aimbot_cfg.lock().unwrap().clone();
             let is_silent_aim = cfg.aim_type == "Silent Aim";
-            if !cfg.enabled && !cfg.trigger_enabled { continue; }
+            if !cfg.enabled && !cfg.trigger_enabled {
+                thread::sleep(Duration::from_millis(8));
+                continue;
+            }
+            thread::sleep(Duration::from_millis(1));
 
             let sdk = match state.sdk.lock().unwrap().clone() {
                 Some(s) => s, None => continue,
@@ -322,6 +340,9 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                 false
             };
             if !aim_on { locked_target = None; }
+            app_handle.state::<crate::state::AppState>()
+                .aimbot_locked_target
+                .store(locked_target.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
 
             if !aim_on && !trig_on { continue; }
 
@@ -486,7 +507,12 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             // character controller and freeze player movement).
             if aim_on && react_ready {
                 if let Some((_, sx, sy, scr_d, tp, _)) = chosen {
-                    let miss = cfg.legit_enabled
+                    // Legit miss only makes sense for the *visible* aim modes
+                    // (Camera/Mouse) — it's there to make the snap look human.
+                    // Silent Aim is already undetectable, so applying it here
+                    // would just throw away guaranteed hits for nothing.
+                    let miss = !is_silent_aim
+                        && cfg.legit_enabled
                         && cfg.legit_miss > 0.0
                         && rand(&mut rng) < cfg.legit_miss;
                     // Smoothing for this tick — softened at the FOV edge when enabled.
@@ -531,8 +557,9 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                                 // Hyper-spam : le jeu réécrit le viewport chaque
                                 // frame, et au moment du tir notre écriture pouvait
                                 // déjà être écrasée -> silent aim "coupé". On martèle
-                                // la valeur en rafale pour gagner la course au tir.
-                                for _ in 0..8 {
+                                // la valeur en rafale pour gagner la course au tir —
+                                // verrouillé fort sur la part choisie, pas de drift.
+                                for _ in 0..32 {
                                     sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64, target_x * 2.0);
                                     sdk.write::<f32>(camera + CameraViewPort::ViewPort as u64 + 4, target_y * 2.0);
                                 }

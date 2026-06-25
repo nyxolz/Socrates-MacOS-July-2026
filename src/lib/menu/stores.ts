@@ -4,8 +4,6 @@ export type TabId =
     | "Aiming"
     | "Misc"
     | "Visuals"
-    | "Output"
-    | "Options"
     | "Player List"
     | "Explorer"
     | "Configs"
@@ -16,14 +14,12 @@ export type TabId =
 // Code-gated developer tab. Flip to `true` to expose the "Dev" tab in the
 // sidebar; ship with `false`. Nothing else references this — toggling it here
 // is the single switch to enable/disable the tab.
-export const DEV_TAB_ENABLED = true;
+export const DEV_TAB_ENABLED = false;
 
 export const TABS: TabId[] = [
     "Aiming",
     "Misc",
     "Visuals",
-    "Output",
-    "Options",
     "Player List",
     "Explorer",
     "Configs",
@@ -53,6 +49,27 @@ export const previewWindowOpen: Writable<boolean> = writable(false);
 // List's "View in explorer" button (alongside flipping `activeTab` to
 // "Explorer"); the Explorer consumes and clears it once the tree has loaded.
 export const explorerReveal: Writable<string | null> = writable(null);
+
+// Dev tab live debug — full last esp_frame payload (camera matrix, players,
+// health, etc). Set every frame from +page.svelte's esp_frame listener so
+// the Dev tab can show exactly what the backend currently reads from memory.
+export type DebugEspFrame = {
+    camera_pos: [number, number, number];
+    forward: [number, number, number];
+    view_matrix_raw: number[][];
+    fov: number;
+    aspect: number;
+    attached: boolean;
+    player_count: number;
+    players: {
+        name: string;
+        distance: number;
+        health: number;
+        relation: number;
+        world: [number, number, number];
+    }[];
+};
+export const debugEspFrame: Writable<DebugEspFrame | null> = writable(null);
 
 // Theme accent — persisted in localStorage. Subscribe in Menu.svelte to
 // reflect the colour into `--accent` etc. on the menu element.
@@ -292,6 +309,15 @@ export type VisualsCfg = {
     radar_range: number;         // world studs mapped to the radar radius
     radar_enemy_color: string;
     radar_ally_color: string;
+
+    // Bullet Tracer — 3D line from local player to a hit target, fades over 4s.
+    bullet_tracer: boolean;
+    bullet_tracer_color: string;
+    bullet_tracer_brightness: number;
+
+    // Rotating crosshair drawn at screen center.
+    crosshair: boolean;
+    crosshair_color: string;
 };
 
 export const VISUALS_DEFAULTS: VisualsCfg = {
@@ -367,6 +393,13 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
     radar_range: 200,
     radar_enemy_color: "#ff4d4d",
     radar_ally_color: "#22e06a",
+
+    bullet_tracer: false,
+    bullet_tracer_color: "#ffffff",
+    bullet_tracer_brightness: 1.0,
+
+    crosshair: false,
+    crosshair_color: "#ffffff",
 };
 export const visuals: Writable<VisualsCfg> = writable(loadStored(VISUALS_KEY, VISUALS_DEFAULTS));
 persist(VISUALS_KEY, visuals);
@@ -420,6 +453,82 @@ export const menuOptions: Writable<MenuOptionsCfg> = writable(
     { ...loadStored(MENU_OPTS_KEY, MENU_OPTIONS_DEFAULTS), menu_visible: true }
 );
 persist(MENU_OPTS_KEY, menuOptions);
+
+// ─── Work.ink key gate ─────────────────────────────────────────────
+// The user redeems a key on your work.ink link; Socrate validates it
+// (single-use) and stores the resulting expiry locally, re-prompting once it
+// lapses.
+export const WORKINK_URL = "https://work.ink/20wQ/6873f7ac-e68c-405c-a79e-90b4a4c68e75";
+
+const KEY_STORE = "socrate.key";
+type StoredKey = { token: string; expiresAfter: number };
+
+export function loadStoredKey(): StoredKey | null {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(KEY_STORE);
+    if (!raw) return null;
+    try { return JSON.parse(raw) as StoredKey; } catch { return null; }
+}
+
+export function saveKey(token: string, expiresAfter: number) {
+    if (typeof localStorage !== "undefined") {
+        localStorage.setItem(KEY_STORE, JSON.stringify({ token, expiresAfter }));
+    }
+    keyUnlocked.set(true);
+    checkKeyExpiry();
+}
+
+export function clearKey() {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(KEY_STORE);
+    keyUnlocked.set(false);
+    keyTimeLeftMs.set(0);
+}
+
+/// True when a stored key exists and hasn't expired yet.
+export function isKeyValid(): boolean {
+    const k = loadStoredKey();
+    // expiresAfter is Unix-millis from work.ink; 0 means "no expiry recorded".
+    return !!k && (k.expiresAfter === 0 || k.expiresAfter > Date.now());
+}
+
+export const keyUnlocked: Writable<boolean> = writable(isKeyValid());
+
+/// Milliseconds left on the stored key (0 once expired/absent). Single
+/// source of truth for any UI that wants to show a countdown — derived from
+/// the same expiry check that drives `keyUnlocked`, never duplicated.
+export const keyTimeLeftMs: Writable<number> = writable(0);
+
+/// Re-checks the stored key's expiry against the clock right now and
+/// updates `keyUnlocked` / `keyTimeLeftMs` accordingly. Independent of any
+/// mounted component — runs as long as the app process is alive, so the key
+/// can never silently keep "working" past its expiry just because no UI
+/// happened to be watching it.
+function checkKeyExpiry() {
+    const k = loadStoredKey();
+    if (!k) {
+        keyTimeLeftMs.set(0);
+        keyUnlocked.set(false);
+        return;
+    }
+    if (k.expiresAfter === 0) {
+        // No expiry recorded — treat as valid indefinitely.
+        keyTimeLeftMs.set(0);
+        keyUnlocked.set(true);
+        return;
+    }
+    const remaining = k.expiresAfter - Date.now();
+    if (remaining <= 0) {
+        clearKey(); // also zeroes keyTimeLeftMs and flips keyUnlocked false
+        return;
+    }
+    keyTimeLeftMs.set(remaining);
+    keyUnlocked.set(true);
+}
+
+if (typeof window !== "undefined") {
+    checkKeyExpiry();
+    setInterval(checkKeyExpiry, 1000);
+}
 
 // ─── Bulk apply / export — used by the Configs tab ─────────────────
 export type SocrateConfigFile = {

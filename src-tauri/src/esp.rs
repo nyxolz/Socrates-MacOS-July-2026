@@ -78,10 +78,16 @@ pub struct EspFrame {
     pub camera_pos: [f32; 3],
     /// Camera look direction (world) — radar uses its X/Z to orient "up".
     pub forward: [f32; 3],
+    /// Raw 3x3 CameraOrientation matrix as read from memory this frame — Dev tab live debug.
+    pub view_matrix_raw: [[f32; 3]; 3],
     pub fov: f32,
     pub aspect: f32,
     pub attached: bool,
     pub cursor: Option<(f64, f64)>,
+    /// Visuals "Bullet Tracer": [ox,oy,tx,ty,age,use_screen_origin] — re-projected each frame.
+    pub bullet_vis_traces: Vec<[f32; 6]>,
+    /// Total hits ever recorded (monotone). Frontend diffs against last value to play sounds.
+    pub bullet_vis_hit_count: u64,
 }
 
 // Use the obfuscated chain resolver. Raw offset literals don't leak.
@@ -289,8 +295,36 @@ fn collect_objects(
 
 pub fn start_esp_thread(app_handle: AppHandle) {
     thread::spawn(move || {
+        // Bullet Tracer (Visuals): HP tracking for aimbot locked target.
+        let mut bvis_last_hp: f32 = -1.0;
+        let mut bvis_last_target: u64 = 0;
+
         loop {
             let state = app_handle.state::<AppState>();
+
+            // Work.ink key gate: do nothing — not even an SDK attach attempt —
+            // until the frontend confirms a validated key. Emit a fully blank
+            // frame so any stale overlay content clears immediately.
+            if !state.key_unlocked.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = app_handle.emit("esp_frame", EspFrame {
+                    markers: vec![],
+                    players: vec![],
+                    objects: vec![],
+                    player_count: 0,
+                    camera_pos: [0.0; 3],
+                    forward: [0.0, 0.0, 1.0],
+                    view_matrix_raw: [[0.0; 3]; 3],
+                    fov: 70.0,
+                    aspect: 16.0 / 9.0,
+                    attached: false,
+                    cursor: None,
+                    bullet_vis_traces: vec![],
+                    bullet_vis_hit_count: 0,
+                });
+                thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+
             let sdk_opt = state.sdk.lock().unwrap().clone();
 
             let sdk = match sdk_opt {
@@ -317,10 +351,13 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                         player_count: 0,
                         camera_pos: [0.0; 3],
                         forward: [0.0, 0.0, 1.0],
+                        view_matrix_raw: [[0.0; 3]; 3],
                         fov: 70.0,
                         aspect: 16.0 / 9.0,
                         attached: true,
                         cursor: None,
+                        bullet_vis_traces: vec![],
+                        bullet_vis_hit_count: state.bullet_vis_hit_count.load(std::sync::atomic::Ordering::Relaxed),
                     });
                     thread::sleep(Duration::from_millis(200));
                     continue;
@@ -581,6 +618,72 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                 });
             }
 
+            // Bullet Tracer: emit tracer + sound when locked target HP drops > 4.
+            let bvis_on = visuals.bullet_tracer;
+            if bvis_on {
+                let target_addr = state.aimbot_locked_target.load(std::sync::atomic::Ordering::Relaxed);
+                if target_addr != 0 {
+                    // Reset baseline if target changed.
+                    if target_addr != bvis_last_target {
+                        bvis_last_target = target_addr;
+                        bvis_last_hp = -1.0;
+                    }
+                    let caches = state.char_caches.lock().unwrap().clone();
+                    if let Some(cache) = caches.iter().find(|c| c.char_addr == target_addr) {
+                        let cur_hp = if sdk.is_valid_ptr(cache.humanoid_addr) {
+                            let h = sdk.read::<f32>(cache.humanoid_addr + offsets::Humanoid::Health as u64);
+                            if h.is_finite() && (0.0..=1000.0).contains(&h) { h.clamp(0.0, 100.0) } else { -1.0 }
+                        } else { -1.0 };
+
+                        if cur_hp >= 0.0 {
+                            let drop = bvis_last_hp - cur_hp;
+                            if bvis_last_hp >= 0.0 && drop > 4.0 {
+                                if let Some(&(prim, true)) = cache.parts.first() {
+                                    let po = offsets::Primitive::Position as u64;
+                                    let tgt = [
+                                        sdk.read::<f32>(prim + po),
+                                        sdk.read::<f32>(prim + po + 4),
+                                        sdk.read::<f32>(prim + po + 8),
+                                    ];
+                                    if tgt[0].is_finite() {
+                                        let mut traces = state.bullet_vis_traces.lock().unwrap();
+                                        traces.push((std::time::Instant::now(), [cam_pos, tgt]));
+                                        let over = traces.len().saturating_sub(50);
+                                        if over > 0 { traces.drain(0..over); }
+                                        state.bullet_vis_hit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                            bvis_last_hp = cur_hp;
+                        }
+                    }
+                } else {
+                    bvis_last_target = 0;
+                    bvis_last_hp = -1.0;
+                }
+            } else {
+                bvis_last_target = 0;
+                bvis_last_hp = -1.0;
+                state.bullet_vis_traces.lock().unwrap().clear();
+            }
+
+            const TRACER_LIFETIME: f64 = 4.0;
+            let bullet_vis_ndc: Vec<[f32; 6]> = if bvis_on {
+                let mut traces = state.bullet_vis_traces.lock().unwrap();
+                traces.retain(|(t, _)| t.elapsed().as_secs_f64() < TRACER_LIFETIME);
+                traces.iter().filter_map(|(t, [orig, tgt])| {
+                    let age = (t.elapsed().as_secs_f64() / TRACER_LIFETIME) as f32;
+                    let nb = world_to_ndc(*tgt, view, proj)?;
+                    let (ox, oy, screen_origin) = match world_to_ndc(*orig, view, proj) {
+                        Some(na) => (na[0], na[1], 0.0f32),
+                        None     => (0.0, -1.0, 1.0f32),
+                    };
+                    Some([ox, oy, nb[0], nb[1], age, screen_origin])
+                }).collect()
+            } else {
+                Vec::new()
+            };
+
             let cursor_local = state.roblox_bounds.lock().unwrap()
                 .and_then(|(bx, by, _, _)| current_cursor().map(|c| (c.x - bx, c.y - by)));
 
@@ -606,10 +709,13 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                 objects,
                 camera_pos: cam_pos,
                 forward,
+                view_matrix_raw: matrix,
                 fov,
                 aspect,
                 attached: true,
                 cursor: cursor_local,
+                bullet_vis_traces: bullet_vis_ndc,
+                bullet_vis_hit_count: state.bullet_vis_hit_count.load(std::sync::atomic::Ordering::Relaxed),
             });
 
             thread::sleep(Duration::from_millis(16));

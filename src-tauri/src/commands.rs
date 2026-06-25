@@ -152,26 +152,42 @@ pub fn export_config_to_desktop(name: String, content: String) -> Result<String,
 
 // ─── Offset health check for the Output tab ─────────────────────────────
 
-/// Returns `true` iff the offset table still matches this Roblox build. The
-/// check is one pass: the DataModel chain must resolve, its `StarterGui`
-/// service slot must read back the name "StarterGui", and a live character in
-/// the cache must expose a child named "Humanoid".
+/// Returns `true` iff the offset table still matches this Roblox build.
+///
+/// Rather than pin the check to one fixed field (which breaks the moment
+/// Roblox reshuffles that one struct), we walk DataModel's and Workspace's
+/// children by name — the same ChildrenList/Name/Parent offsets every other
+/// instance walk in Socrate depends on — and accept the build as up to date
+/// the moment ANY of a handful of near-universal service/object names shows
+/// up. A single child resolving by name proves the whole walking chain
+/// (ChildrenList offset, array begin/end, Name offset) still works.
 #[tauri::command]
 pub fn diag_check(state: State<AppState>) -> bool {
     let sdk = match state.sdk.lock().unwrap().clone() { Some(s) => s, None => return false };
     let dm = match security::resolve_data_model(&sdk) { Some(v) => v, None => return false };
 
-    // StarterGui — fixed DataModel offset, validated by name.
-    let sg = sdk.read::<u64>(dm + offsets::DataModel::StarterGui as u64);
-    if !sdk.is_valid_ptr(sg) { return false; }
-    if sdk::name_of(&sdk, sg) != obfstr!("StarterGui") { return false; }
+    const TARGET_NAMES: [&str; 6] =
+        ["Terrain", "Workspace", "Spawn", "Ugc", "RunService", "GuiService"];
 
-    // Humanoid — name check off a live character in the cache.
-    let caches = state.char_caches.lock().unwrap().clone();
-    match caches.iter().find(|c| sdk.is_valid_ptr(c.humanoid_addr)) {
-        Some(c) => sdk::name_of(&sdk, c.humanoid_addr) == obfstr!("Humanoid"),
-        None => false,
+    let dm_children = sdk::get_children(&sdk, dm);
+    let found_in_dm = dm_children
+        .iter()
+        .any(|&c| TARGET_NAMES.contains(&sdk::name_of(&sdk, c).as_str()));
+    if found_in_dm { return true; }
+
+    // Not found directly under DataModel — also check Workspace's own
+    // children (Terrain / SpawnLocation / Ugc-style folders live there).
+    if let Some(ws) = security::resolve_workspace(&sdk) {
+        let ws_children = sdk::get_children(&sdk, ws);
+        if ws_children
+            .iter()
+            .any(|&c| TARGET_NAMES.contains(&sdk::name_of(&sdk, c).as_str()))
+        {
+            return true;
+        }
     }
+
+    false
 }
 
 // ─── Player List + Spectate ──────────────────────────────────────────────
@@ -337,6 +353,16 @@ pub fn reset_esp(state: State<AppState>) {
 #[tauri::command]
 pub fn set_object_esp(state: State<AppState>, enabled: bool) {
     state.object_esp_enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Work.ink key gate — the *authoritative* server-truth switch. Called by the
+/// frontend the moment a key is validated (or found still valid in
+/// localStorage on launch) / expires. Every feature thread checks this flag
+/// before doing anything, so the kill switch holds even if the frontend's
+/// `bridge.ts` has already pushed a stale "enabled" config to the backend.
+#[tauri::command]
+pub fn set_key_unlocked(state: State<AppState>, unlocked: bool) {
+    state.key_unlocked.store(unlocked, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// List the name of every direct child of the `Players` service. Backs the

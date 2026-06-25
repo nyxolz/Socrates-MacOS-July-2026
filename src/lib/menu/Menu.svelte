@@ -1,16 +1,15 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { invoke } from "@tauri-apps/api/core";
-    import { activeTab, theme, menuOptions, localVersion, remoteVersion, lastVersionCheck, updateAvailable, previewWindowOpen } from "./stores";
+    import { activeTab, theme, menuOptions, localVersion, remoteVersion, lastVersionCheck, updateAvailable, previewWindowOpen, keyUnlocked, keyTimeLeftMs } from "./stores";
     import { get } from "svelte/store";
     import { startConfigBridge } from "./bridge";
     import { setZone } from "./zones";
+    import KeyGate from "./KeyGate.svelte";
     import Sidebar from "./Sidebar.svelte";
     import Aiming from "./tabs/Aiming.svelte";
     import Misc from "./tabs/Misc.svelte";
     import Visuals from "./tabs/Visuals.svelte";
-    import Output from "./tabs/Output.svelte";
-    import Options from "./tabs/Options.svelte";
     import PlayerList from "./tabs/PlayerList.svelte";
     import Explorer from "./tabs/Explorer.svelte";
     import Configs from "./tabs/Configs.svelte";
@@ -44,6 +43,20 @@
     let stopBridge: (() => void) | undefined;
     let socrateVersion = "…";
     let versionTimer = 0;
+
+    // Live "time left on key" — `stores.ts` runs the actual expiry check
+    // on its own interval (independent of this component); here we just
+    // format whatever it last computed for display.
+    function formatTimeLeft(ms: number): string {
+        const totalSec = Math.floor(ms / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        if (h > 0) return `${h}h ${m}m left`;
+        if (m > 0) return `${m}m ${s}s left`;
+        return `${s}s left`;
+    }
+    $: keyTimeLeft = $keyTimeLeftMs > 0 ? formatTimeLeft($keyTimeLeftMs) : "";
 
     async function pollRemoteVersion() {
         try {
@@ -186,6 +199,9 @@
     >
         <span class="brand">Socrate</span>
         <span class="version">{socrateVersion}</span>
+        {#if keyTimeLeft}
+            <span class="key-left">{keyTimeLeft}</span>
+        {/if}
         <span class="spacer"></span>
         <button class="iconbtn" title={minimized ? "Restore" : "Minimize"}
                 on:click|stopPropagation={toggleMinimize}
@@ -198,6 +214,9 @@
     </div>
 
     {#if !minimized}
+        {#if !$keyUnlocked}
+            <KeyGate />
+        {:else}
         <div class="body">
             <Sidebar />
             <div class="content">
@@ -216,10 +235,6 @@
                     <Misc />
                 {:else if $activeTab === "Visuals"}
                     <Visuals />
-                {:else if $activeTab === "Output"}
-                    <Output />
-                {:else if $activeTab === "Options"}
-                    <Options />
                 {:else if $activeTab === "Player List"}
                     <PlayerList />
                 {:else if $activeTab === "Explorer"}
@@ -235,6 +250,7 @@
                 {/if}
             </div>
         </div>
+        {/if}
     {/if}
 </div>
 
@@ -248,9 +264,14 @@
         max-width: 1200px;
         height: var(--menu-h);
         background: var(--bg-window);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+        border: 2px solid transparent;
+        border-radius: 16px;
+        background-image:
+            linear-gradient(var(--bg-window), var(--bg-window)),
+            linear-gradient(135deg, #ffae3d, #ff7a1f, #ff4a2a, #ff3d6e, #d81b60);
+        background-origin: border-box;
+        background-clip: padding-box, border-box;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), 0 0 18px rgba(255, 122, 31, 0.25);
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -298,6 +319,15 @@
         font-size: 9px;
         color: var(--text-muted);
         font-variant-numeric: tabular-nums;
+    }
+    .key-left {
+        font-size: 9px;
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+        padding: 1px 6px;
+        border-radius: var(--radius-small);
+        background: var(--bg-input);
+        border: 1px solid var(--border-soft);
     }
     .spacer { flex: 1; }
     .iconbtn {

@@ -12,8 +12,6 @@
         "Aiming": "target",
         "Misc": "sliders",
         "Visuals": "eye",
-        "Output": "terminal",
-        "Options": "filter",
         "Player List": "users",
         "Explorer": "code",
         "Configs": "package",
@@ -22,12 +20,6 @@
         "Settings": "gear",
     };
 
-
-    // A continuous streak travelling around the active button's border,
-    // fading toward the tail. Built from a handful of larger overlapping
-    // dots rather than many tiny ones — same streak length, ~3x less paint.
-    const TRAIL_LEN = 45;
-    const TRAIL = Array.from({ length: TRAIL_LEN }, (_, i) => i);
 
     let itemEls: HTMLButtonElement[] = [];
     let indicatorTop = 0;
@@ -74,13 +66,6 @@
                 on:click={() => set(t)}
                 title={t === "Settings" && $updateAvailable ? "Update available" : t}
             >
-                {#if $activeTab === t}
-                    <span class="border-line">
-                        {#each TRAIL as i}
-                            <span class="dot" style="--i: {i}; opacity: {1 - i / TRAIL_LEN}"></span>
-                        {/each}
-                    </span>
-                {/if}
                 <span class="content">
                     <Icon name={TAB_ICONS[t]} size={13} />
                     <span class="label">{t}</span>
@@ -197,6 +182,21 @@
         flex: 1;
         min-height: 0;
         overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: var(--text-dim) transparent;
+    }
+    .nav::-webkit-scrollbar {
+        width: 5px;
+    }
+    .nav::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .nav::-webkit-scrollbar-thumb {
+        background: var(--text-dim);
+        border-radius: 3px;
+    }
+    .nav::-webkit-scrollbar-thumb:hover {
+        background: var(--text-muted);
     }
     /* Sliding highlight — animates to the active item's position so
        switching categories feels like the selection "drops" into place. */
@@ -270,30 +270,6 @@
         font-style: italic;
         line-height: 1;
         flex-shrink: 0;
-    }
-    /* A dense stream of dots, packed close enough to read as one solid
-       white streak travelling around the border. Circles have no
-       orientation, so the streak stays perfectly smooth around corners. */
-    .border-line {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        z-index: 0;
-    }
-    .dot {
-        position: absolute;
-        width: 5px;
-        height: 5px;
-        margin: -2.5px;
-        background: #ffffff;
-        border-radius: 50%;
-        offset-path: inset(0 round var(--radius));
-        animation: travel-border 4s linear infinite reverse;
-        animation-delay: calc(var(--i) * 0.04s);
-    }
-    @keyframes travel-border {
-        from { offset-distance: 0%; }
-        to { offset-distance: 100%; }
     }
     .footer {
         display: flex;

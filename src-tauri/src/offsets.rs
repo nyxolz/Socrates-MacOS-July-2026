@@ -8,8 +8,8 @@ pub const ROBLOX_VERSION: &str = "version-73d88b9483b340ae";
 // ─── Entry — static offsets relative to the Roblox base image ─────────────
 pub enum Entry {
     /// `Roblox.base + FakeDataModel` → pointer to the FakeDataModel struct.
-    FakeDataModelARM = 0x6101870,
-    FakeDataModelINTEL = 0x64AE628,
+    FakeDataModelARM = 0x620CE30,
+    FakeDataModelINTEL = 0x65AAFE8,
 }
 
 // ─── Instance (shared layout for every Roblox Instance) ──────────────────
@@ -44,7 +44,7 @@ pub enum DataModel {
 // ─── Workspace ───────────────────────────────────────────────────────────
 pub enum Workspace {
     Terrain = 0x470,
-    Camera = 0x460,
+    Camera = 0x458,
 }
 
 // ─── Camera ──────────────────────────────────────────────────────────────

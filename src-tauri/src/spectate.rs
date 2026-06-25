@@ -81,6 +81,7 @@ pub fn start_spectate_thread(app_handle: AppHandle) {
             thread::sleep(Duration::from_millis(100));
 
             let state = app_handle.state::<AppState>();
+            if !state.key_unlocked.load(std::sync::atomic::Ordering::Relaxed) { continue; }
             let target = *state.spectate_target.lock().unwrap();
 
             let sdk = match state.sdk.lock().unwrap().clone() {

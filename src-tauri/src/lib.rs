@@ -18,6 +18,7 @@ mod menu_hotkey;
 mod version;
 mod secrets;
 mod telemetry;
+mod key;
 
 use std::ptr;
 
@@ -251,6 +252,8 @@ pub fn run() {
             commands::get_avatar_url,
             commands::get_version,
             commands::check_remote_version,
+            commands::set_key_unlocked,
+            key::validate_workink_key,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

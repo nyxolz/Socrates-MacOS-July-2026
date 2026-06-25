@@ -5,7 +5,7 @@
     import Menu from "$lib/menu/Menu.svelte";
     import Toasts from "$lib/menu/Toasts.svelte";
     import BindsHud from "$lib/menu/BindsHud.svelte";
-    import { visuals, aimbot, menuOptions, theme, type VisualsCfg, type AimbotCfg, type MenuOptionsCfg } from "$lib/menu/stores";
+    import { visuals, aimbot, menuOptions, theme, debugEspFrame, type VisualsCfg, type AimbotCfg, type MenuOptionsCfg } from "$lib/menu/stores";
     import { getAvatar } from "$lib/menu/avatar";
 
     type Marker = {
@@ -40,10 +40,13 @@
         player_count: number;
         camera_pos: [number, number, number];
         forward: [number, number, number];
+        view_matrix_raw: number[][];
         fov: number;
         aspect: number;
         attached: boolean;
         cursor: [number, number] | null;
+        bullet_vis_traces: [number, number, number, number, number, number][]; // [ox,oy,tx,ty,age,screen_origin]
+        bullet_vis_hit_count: number;
     };
 
     const TITLEBAR_HEIGHT = 28;
@@ -52,6 +55,42 @@
     let unlistenFrame: UnlistenFn | undefined;
     let lastFrame: EspFrame | null = null;
     let rafHandle = 0;
+
+    // Headshot sound — new Audio() per hit so multiple shots overlap freely.
+    const HIT_SOUND_URL = "/HeadShotSnoud.mp3";
+    let lastHitCount = 0;
+    function playHitSound() {
+        const s = new Audio(HIT_SOUND_URL);
+        s.volume = 0.35;
+        s.play().catch(() => {});
+    }
+
+    // Rotating crosshair angle (radians), advanced each frame.
+    let crosshairAngle = 0;
+    function drawCrosshair(ctx: CanvasRenderingContext2D, cx: number, cy: number, angle: number, color: string) {
+        const gap = 5, len = 10, thickness = 1.5, dotR = 1.5;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle);
+        for (const pass of ["black", "color"] as const) {
+            ctx.strokeStyle = pass === "black" ? "rgba(0,0,0,0.8)" : color;
+            ctx.lineWidth = pass === "black" ? thickness + 1.2 : thickness;
+            ctx.beginPath();
+            for (let i = 0; i < 4; i++) {
+                const a = (Math.PI / 2) * i;
+                const x1 = Math.cos(a) * gap, y1 = Math.sin(a) * gap;
+                const x2 = Math.cos(a) * (gap + len), y2 = Math.sin(a) * (gap + len);
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2);
+            }
+            ctx.stroke();
+        }
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(0, 0, dotR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
 
     let vcfg: VisualsCfg | null = null;
     let acfg: AimbotCfg | null = null;
@@ -539,6 +578,62 @@
             }
 
             if (cfg.radar) drawRadar(ctx, lastFrame, cfg);
+
+            // Play hit sound based on monotone hit counter (immune to trace expiry).
+            if (cfg.bullet_tracer) {
+                const hitCount = lastFrame.bullet_vis_hit_count ?? 0;
+                const newHits = hitCount - lastHitCount;
+                if (newHits > 0) {
+                    for (let i = 0; i < newHits; i++) playHitSound();
+                    lastHitCount = hitCount;
+                }
+            } else {
+                lastHitCount = lastFrame.bullet_vis_hit_count ?? 0;
+            }
+
+            // Visuals "Bullet Tracer": thick 3D line re-projected each frame, fades over 4s.
+            if (cfg.bullet_tracer && lastFrame.bullet_vis_traces?.length) {
+                const hex = cfg.bullet_tracer_color ?? "#ffffff";
+                const bright = Math.min(3, Math.max(0.1, cfg.bullet_tracer_brightness ?? 1));
+                const r = parseInt(hex.slice(1, 3), 16);
+                const g = parseInt(hex.slice(3, 5), 16);
+                const b = parseInt(hex.slice(5, 7), 16);
+                ctx.save();
+                for (const seg of lastFrame.bullet_vis_traces) {
+                    const age = seg[4];
+                    const alpha = Math.min(1, (1 - age) * bright);
+                    const useScreenOrigin = seg[5] > 0.5;
+                    const origin = useScreenOrigin
+                        ? { x: canvas.width / 2, y: canvas.height }
+                        : ndcToScreen(seg[0], seg[1]);
+                    const tgt = ndcToScreen(seg[2], seg[3]);
+                    ctx.lineWidth = 6;
+                    ctx.strokeStyle = `rgba(${r},${g},${b},${alpha * 0.25})`;
+                    ctx.shadowColor = `rgba(${r},${g},${b},${alpha * 0.6})`;
+                    ctx.shadowBlur = 10 * bright;
+                    ctx.beginPath();
+                    ctx.moveTo(origin.x, origin.y);
+                    ctx.lineTo(tgt.x, tgt.y);
+                    ctx.stroke();
+                    ctx.lineWidth = 2.5;
+                    ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+                    ctx.shadowBlur = 4 * bright;
+                    ctx.beginPath();
+                    ctx.moveTo(origin.x, origin.y);
+                    ctx.lineTo(tgt.x, tgt.y);
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+
+            // Rotating crosshair at screen center.
+            if (cfg.crosshair) {
+                crosshairAngle += 0.004;
+                const renderH = window.innerHeight - TITLEBAR_HEIGHT;
+                const cx = window.innerWidth / 2;
+                const cy = TITLEBAR_HEIGHT + renderH / 2;
+                drawCrosshair(ctx, cx, cy, crosshairAngle, cfg.crosshair_color);
+            }
         }
         rafHandle = requestAnimationFrame(renderLoop);
     }
@@ -564,7 +659,10 @@
         resizeCanvas();
         window.addEventListener("resize", resizeCanvas);
         window.addEventListener("keydown", onToggleKey, true);
-        unlistenFrame = await listen<EspFrame>("esp_frame", (e) => { lastFrame = e.payload; });
+        unlistenFrame = await listen<EspFrame>("esp_frame", (e) => {
+            lastFrame = e.payload;
+            debugEspFrame.set(e.payload);
+        });
         unlistenToggle = await listen("menu_toggle", () => {
             menuOptions.update(m => ({ ...m, menu_visible: !m.menu_visible }));
         });

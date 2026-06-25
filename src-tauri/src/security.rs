@@ -193,14 +193,14 @@ const fn compute_key() -> u64 {
 // ARM and Intel Roblox builds expose two different `base + entry` offsets, but
 // the same chain: the slot points at the FakeDataModel and its `+0x18` field
 // holds the live DataModel.
-//   • ARM  : `read(base + 0x605D2F0)` → FakeDataModel*, then `read(+0x18)` → DataModel.
-//   • Intel: `read(base + 0x6411F38)` → FakeDataModel*, then `read(+0x18)` → DataModel.
+//   • ARM  : `read(base + 0x620CE30)` → FakeDataModel*, then `read(+0x18)` → DataModel.
+//   • Intel: `read(base + 0x65AAFE8)` → FakeDataModel*, then `read(+0x18)` → DataModel.
 // All offsets are XOR-obfuscated; the active pair is selected at compile time
 // via `#[cfg(target_arch = …)]` below.
 #[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMARM:   u64 = 0x6101870u64 ^ KEY_USED_AT_COMPILE;
+const ENC_ENTRY_FAKE_DMARM:   u64 = 0x620CE30u64 ^ KEY_USED_AT_COMPILE;
 #[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x64AE628u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
+const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x65AAFE8u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
 const ENC_FDM_DATAMODEL:      u64 = 0x18u64      ^ KEY_USED_AT_COMPILE;
 const ENC_DM_WORKSPACE:       u64 = 0x168u64     ^ KEY_USED_AT_COMPILE;
 const ENC_WS_CAMERA:          u64 = 0x460u64     ^ KEY_USED_AT_COMPILE;
@@ -233,7 +233,7 @@ pub const fn arch_name() -> &'static str {
 
 use crate::sdk::SdkI;
 
-/// ARM build: `base + 0x605D2F0` points at the FakeDataModel; its `+0x18` field
+/// ARM build: `base + 0x6198540` points at the FakeDataModel; its `+0x18` field
 /// holds the live DataModel. Both reads happen every call so leaving/rejoining
 /// a game resolves the new DataModel.
 #[cfg(target_arch = "aarch64")]
@@ -245,7 +245,7 @@ pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
     if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
 }
 
-/// Intel build: `base + 0x6411F38` points at the FakeDataModel; its `+0x18`
+/// Intel build: `base + 0x654F608` points at the FakeDataModel; its `+0x18`
 /// field holds the live DataModel. Both reads happen every call so
 /// leaving/rejoining a game resolves the new DataModel.
 #[cfg(target_arch = "x86_64")]
@@ -264,9 +264,16 @@ pub fn resolve_workspace(sdk: &SdkI) -> Option<u64> {
     if sdk.is_valid_ptr(ws) { Some(ws) } else { None }
 }
 
+/// Resolves Workspace.CurrentCamera by walking Workspace's children and
+/// matching `Name == "Camera"` — name lookup survives Roblox layout shifts
+/// that break the static `+0x460` field offset. The static offset is tried
+/// only as a cheap fallback if the name walk comes up empty (e.g. during a
+/// load screen where the children list is briefly empty).
 #[inline(never)]
 pub fn resolve_camera(sdk: &SdkI) -> Option<u64> {
     let ws = resolve_workspace(sdk)?;
+    let by_name = crate::sdk::instance::find_first_child(sdk, ws, "Camera");
+    if by_name != 0 { return Some(by_name); }
     let cam = sdk.read::<u64>(ws + off_ws_camera());
     if sdk.is_valid_ptr(cam) { Some(cam) } else { None }
 }

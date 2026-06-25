@@ -702,7 +702,8 @@ pub fn start_misc_thread(app_handle: AppHandle) {
         let dt = last_tick.elapsed().as_secs_f32();
         last_tick = Instant::now();
         let state = app_handle.state::<AppState>();
-        let sdk_opt = state.sdk.lock().unwrap().clone();
+        let unlocked = state.key_unlocked.load(std::sync::atomic::Ordering::Relaxed);
+        let sdk_opt = if unlocked { state.sdk.lock().unwrap().clone() } else { None };
         if let Some(sdk) = sdk_opt {
             let humanoid = state.local_humanoid_addr.load(std::sync::atomic::Ordering::Relaxed);
             if sdk.is_valid_ptr(humanoid) {
