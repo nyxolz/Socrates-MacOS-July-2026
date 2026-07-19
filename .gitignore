@@ -12,3 +12,5 @@ vite.config.ts.timestamp-*
 # Build-time secrets — never commit
 src-tauri/src/secrets.rs
 .env.build
+
+supabase/.temp/

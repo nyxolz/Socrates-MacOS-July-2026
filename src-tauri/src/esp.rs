@@ -93,26 +93,35 @@ pub struct EspFrame {
 // Use the obfuscated chain resolver. Raw offset literals don't leak.
 use security::resolve_camera;
 
+/// Raw memory layout of a Roblox CFrame: a 3×3 rotation matrix (Right/Up/Back
+/// columns) immediately followed by the Vec3 position — 48 contiguous bytes,
+/// one `vm_read_overwrite` syscall instead of 12 separate float reads.
+///
+/// This exact layout is shared by every CFrame-holding struct we read:
+/// Camera (`CameraOrientation` + `CameraPosition = CameraOrientation+0x24`)
+/// AND every BasePart's Primitive (rotation at `+0xC8`, `Position = +0xC8+0x24
+/// = 0xEC`) — same shape, different base offset. Reusable everywhere instead
+/// of duplicating 12-read call sites.
+///
+/// Batching matters for two reasons:
+///   1. **Correctness** — the camera is rewritten by Roblox's render thread
+///      60+ times a second; spreading the read across 12 syscalls left a wide
+///      window for a torn (part-old / part-new) read, which made every
+///      projection fail for that tick and the whole ESP overlay blink off.
+///   2. **Throughput** — Part ESP alone was doing ~13 syscalls per part
+///      (1 pos read × 3 + 9 rotation floats + size); with up to 11 parts per
+///      player this added up fast. One CFrame read replaces 12 of those.
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub struct CFrameRaw {
+    pub m: [[f32; 3]; 3],
+    pub pos: [f32; 3],
+}
+
 fn read_camera(sdk: &SdkI, camera_ptr: u64) -> ([f32; 3], [[f32; 3]; 3]) {
-    let pos_off = offsets::Camera::CameraPosition as u64;
     let mat_off = offsets::Camera::CameraOrientation as u64;
-    let cam_pos = [
-        sdk.read::<f32>(camera_ptr + pos_off),
-        sdk.read::<f32>(camera_ptr + pos_off + 4),
-        sdk.read::<f32>(camera_ptr + pos_off + 8),
-    ];
-    let matrix = [
-        [sdk.read::<f32>(camera_ptr + mat_off),
-         sdk.read::<f32>(camera_ptr + mat_off + 4),
-         sdk.read::<f32>(camera_ptr + mat_off + 8)],
-        [sdk.read::<f32>(camera_ptr + mat_off + 12),
-         sdk.read::<f32>(camera_ptr + mat_off + 16),
-         sdk.read::<f32>(camera_ptr + mat_off + 20)],
-        [sdk.read::<f32>(camera_ptr + mat_off + 24),
-         sdk.read::<f32>(camera_ptr + mat_off + 28),
-         sdk.read::<f32>(camera_ptr + mat_off + 32)],
-    ];
-    (cam_pos, matrix)
+    let raw = sdk.read::<CFrameRaw>(camera_ptr + mat_off);
+    (raw.pos, raw.m)
 }
 
 fn project_marker(
@@ -147,11 +156,10 @@ fn project_marker(
 /// Right/Up/Back). (0xC8,0xD4,0xE0) is the Right column → trait latéral.
 /// LookVector = -(Back column) = -(m[i][2]) = -(0xD0, 0xDC, 0xE8).
 fn read_look_dir(sdk: &SdkI, primitive: u64) -> [f32; 3] {
-    let dir = [
-        -sdk.read::<f32>(primitive + 0xD0),
-        -sdk.read::<f32>(primitive + 0xDC),
-        -sdk.read::<f32>(primitive + 0xE8),
-    ];
+    // One read of the full rotation matrix (was 3 separate float reads for
+    // just the Back column) — see `CFrameRaw`.
+    let raw = sdk.read::<CFrameRaw>(primitive + 0xC8);
+    let dir = [-raw.m[0][2], -raw.m[1][2], -raw.m[2][2]];
     let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
     if l < 1e-5 || !l.is_finite() { return [0.0, 0.0, 1.0]; }
     [dir[0] / l, dir[1] / l, dir[2] / l]
@@ -170,23 +178,25 @@ fn project_part_box(
     view: [[f32; 4]; 4],
     proj: [[f32; 4]; 4],
 ) -> Option<[[f32; 2]; 8]> {
-    let pos = read_pos_fast(sdk, prim);
+    // One read for rotation + position (was 1+9=10 separate float reads —
+    // see `CFrameRaw`; Position lands at `+0xC8+0x24 == 0xEC`, matching
+    // `Primitive::Position`, so this also replaces the old `read_pos_fast`
+    // call), plus one more for Size — 2 syscalls total instead of 13.
+    let cf = sdk.read::<CFrameRaw>(prim + 0xC8);
+    let pos = cf.pos;
     if !pos[0].is_finite() { return None; }
 
     let size_off = offsets::Primitive::Size as u64;
-    let half = [
-        sdk.read::<f32>(prim + size_off) * 0.5,
-        sdk.read::<f32>(prim + size_off + 4) * 0.5,
-        sdk.read::<f32>(prim + size_off + 8) * 0.5,
-    ];
+    let size = sdk.read::<[f32; 3]>(prim + size_off);
+    let half = [size[0] * 0.5, size[1] * 0.5, size[2] * 0.5];
     if !(half[0].is_finite() && half[1].is_finite() && half[2].is_finite()) { return None; }
     if half[0] <= 0.0 && half[1] <= 0.0 && half[2] <= 0.0 { return None; }
     if half[0] > 200.0 || half[1] > 200.0 || half[2] > 200.0 { return None; }
 
     // CFrame rotation columns: Right (j=0), Up (j=1), Back (j=2).
-    let right = [sdk.read::<f32>(prim + 0xC8), sdk.read::<f32>(prim + 0xD4), sdk.read::<f32>(prim + 0xE0)];
-    let up    = [sdk.read::<f32>(prim + 0xCC), sdk.read::<f32>(prim + 0xD8), sdk.read::<f32>(prim + 0xE4)];
-    let back  = [sdk.read::<f32>(prim + 0xD0), sdk.read::<f32>(prim + 0xDC), sdk.read::<f32>(prim + 0xE8)];
+    let right = [cf.m[0][0], cf.m[1][0], cf.m[2][0]];
+    let up    = [cf.m[0][1], cf.m[1][1], cf.m[2][1]];
+    let back  = [cf.m[0][2], cf.m[1][2], cf.m[2][2]];
 
     let mut corners = [[0.0_f32; 2]; 8];
     for bits in 0..8usize {
@@ -215,22 +225,21 @@ fn project_object_box(
     view: [[f32; 4]; 4],
     proj: [[f32; 4]; 4],
 ) -> Option<([[f32; 2]; 8], [f32; 2])> {
-    let pos = read_pos_fast(sdk, prim);
+    // Same single-syscall batching as `project_part_box` — see `CFrameRaw`.
+    let cf = sdk.read::<CFrameRaw>(prim + 0xC8);
+    let pos = cf.pos;
     if !pos[0].is_finite() { return None; }
 
     let size_off = offsets::Primitive::Size as u64;
-    let half = [
-        sdk.read::<f32>(prim + size_off) * 0.5,
-        sdk.read::<f32>(prim + size_off + 4) * 0.5,
-        sdk.read::<f32>(prim + size_off + 8) * 0.5,
-    ];
+    let size = sdk.read::<[f32; 3]>(prim + size_off);
+    let half = [size[0] * 0.5, size[1] * 0.5, size[2] * 0.5];
     if !(half[0].is_finite() && half[1].is_finite() && half[2].is_finite()) { return None; }
     if half[0] <= 0.0 && half[1] <= 0.0 && half[2] <= 0.0 { return None; }
     if half[0] > 2000.0 || half[1] > 2000.0 || half[2] > 2000.0 { return None; }
 
-    let right = [sdk.read::<f32>(prim + 0xC8), sdk.read::<f32>(prim + 0xD4), sdk.read::<f32>(prim + 0xE0)];
-    let up    = [sdk.read::<f32>(prim + 0xCC), sdk.read::<f32>(prim + 0xD8), sdk.read::<f32>(prim + 0xE4)];
-    let back  = [sdk.read::<f32>(prim + 0xD0), sdk.read::<f32>(prim + 0xDC), sdk.read::<f32>(prim + 0xE8)];
+    let right = [cf.m[0][0], cf.m[1][0], cf.m[2][0]];
+    let up    = [cf.m[0][1], cf.m[1][1], cf.m[2][1]];
+    let back  = [cf.m[0][2], cf.m[1][2], cf.m[2][2]];
 
     let center = world_to_ndc(pos, view, proj)?;
     let mut corners = [[0.0_f32; 2]; 8];
@@ -299,8 +308,25 @@ pub fn start_esp_thread(app_handle: AppHandle) {
         let mut bvis_last_hp: f32 = -1.0;
         let mut bvis_last_target: u64 = 0;
 
+        // Dev tab diagnostics — persists across ticks to detect anomalies
+        // (camera teleports) between consecutive frames.
+        let mut diag_prev_cam_pos: Option<[f32; 3]> = None;
+
+        // Camera-resolve grace period: Roblox's FakeDataModel → DataModel →
+        // Workspace → Camera chain can go transiently unresolvable for up to
+        // a second or two (game-side reallocation, anti-cheat pointer
+        // rotation, etc.) without the player actually having left. Blanking
+        // the whole overlay the instant that happens makes EVERY player's
+        // ESP vanish together for that whole window. Instead: while the
+        // chain is down, simply stop emitting new frames (the frontend keeps
+        // showing the last good one) for up to `CAMERA_GRACE`; only after
+        // that do we actually clear the overlay.
+        const CAMERA_GRACE: Duration = Duration::from_millis(2500);
+        let mut camera_missing_since: Option<std::time::Instant> = None;
+
         loop {
             let state = app_handle.state::<AppState>();
+            state.diag_esp_ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             // Work.ink key gate: do nothing — not even an SDK attach attempt —
             // until the frontend confirms a validated key. Emit a fully blank
@@ -342,8 +368,24 @@ pub fn start_esp_thread(app_handle: AppHandle) {
             };
 
             let camera_ptr = match resolve_camera(&sdk) {
-                Some(c) => c,
+                Some(c) => {
+                    // Chain resolved again — clear the grace-period clock.
+                    camera_missing_since = None;
+                    c
+                }
                 None => {
+                    let now = std::time::Instant::now();
+                    let missing_since = *camera_missing_since.get_or_insert(now);
+                    if now.duration_since(missing_since) < CAMERA_GRACE {
+                        // Within the grace window: emit nothing and let the
+                        // frontend keep showing its last received frame
+                        // instead of flashing to blank. Poll fast so we
+                        // recover the instant the chain comes back.
+                        thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                    // Genuinely gone (game closed / place changed) — clear
+                    // the overlay for real.
                     let _ = app_handle.emit("esp_frame", EspFrame {
                         markers: vec![],
                         players: vec![],
@@ -365,6 +407,22 @@ pub fn start_esp_thread(app_handle: AppHandle) {
             };
 
             let (cam_pos, matrix) = read_camera(&sdk, camera_ptr);
+
+            // Camera-jump detector: a torn (non-atomic) CFrame read makes
+            // the position teleport for exactly one tick, then the NEXT
+            // tick's clean read snaps it back — no legitimate camera pan
+            // moves 200+ studs in 16 ms. Flag it so the Dev tab can show
+            // whether this is actually happening (or rule it out).
+            if let Some(prev) = diag_prev_cam_pos {
+                let dx = cam_pos[0] - prev[0];
+                let dy = cam_pos[1] - prev[1];
+                let dz = cam_pos[2] - prev[2];
+                let jump = (dx * dx + dy * dy + dz * dz).sqrt();
+                if jump > 200.0 {
+                    state.diag_esp_camera_jumps.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            diag_prev_cam_pos = Some(cam_pos);
 
             let bounds = state.roblox_bounds.lock().unwrap().clone();
             let (win_w, win_h) = bounds.map(|(_, _, w, h)| (w, h)).unwrap_or((1920.0, 1080.0));
@@ -402,8 +460,47 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     manual, team_check, cache.parent_addr, local_parent);
                 if relation == 2 { continue; }
 
-                // Read every valid part once; reuse for skeleton + box2d
-                // bounding + box centre choice.
+                // Fast distance cull — read ONE part (head, or the first valid
+                // slot) to compute the character's distance to the camera
+                // before doing anything else. If they're out of range we can
+                // skip the other ~10 part reads entirely. This alone cuts the
+                // SDK read rate by ~90% on populated servers where most
+                // players are far outside `max_distance`.
+                let anchor_pos = 'anchor: {
+                    for (prim, valid) in cache.parts.iter() {
+                        if !*valid { continue; }
+                        let p = read_pos_fast(&sdk, *prim);
+                        if !p[0].is_finite() { continue; }
+                        if p[0] == 0.0 && p[1] == 0.0 && p[2] == 0.0 { continue; }
+                        break 'anchor Some(p);
+                    }
+                    None
+                };
+                let anchor_pos = match anchor_pos {
+                    Some(a) => a,
+                    None => {
+                        // Every valid part came back NaN/zero this tick — this
+                        // player's ESP visibly blinks off for this one frame.
+                        state.diag_esp_players_culled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        continue;
+                    }
+                };
+
+                let dx = anchor_pos[0] - cam_pos[0];
+                let dy = anchor_pos[1] - cam_pos[1];
+                let dz = anchor_pos[2] - cam_pos[2];
+                let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+
+                // Enemies (relation 0) beyond `max_distance` are dropped
+                // before we pay for the rest of their parts. Allies (relation
+                // 1) fall through — they get the range-independent green head
+                // dot handled below.
+                if relation == 0 && (distance < min_dist || distance > max_dist) {
+                    continue;
+                }
+
+                // Now that we know they're worth drawing, read every remaining
+                // valid part (skeleton + box2d bounds + centre choice).
                 let mut world_positions: [Option<[f32; 3]>; 11] = [None; 11];
                 let mut head_world: Option<[f32; 3]> = None;
                 let mut center_world: Option<[f32; 3]> = None;
@@ -417,13 +514,7 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     if center_world.is_none() { center_world = Some(pos); }
                 }
 
-                let anchor = match head_world.or(center_world) { Some(a) => a, None => continue };
-
-                // Distance + max-distance filter
-                let dx = anchor[0] - cam_pos[0];
-                let dy = anchor[1] - cam_pos[1];
-                let dz = anchor[2] - cam_pos[2];
-                let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+                let anchor = head_world.or(center_world).unwrap_or(anchor_pos);
 
                 // Allies: emit a stripped payload carrying only the head
                 // anchor (for the green dot) — no boxes / skeleton / text, and
@@ -450,8 +541,8 @@ pub fn start_esp_thread(app_handle: AppHandle) {
                     continue;
                 }
 
-                if distance < min_dist { continue; }
-                if distance > max_dist { continue; }
+                // Distance filter already applied above for enemies before the
+                // parts read — no need to check again here.
 
                 // Health (Humanoid + 0x184). -1 sentinel if read garbage.
                 let mut health = -1.0_f32;

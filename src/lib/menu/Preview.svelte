@@ -235,13 +235,37 @@
     </svg>
 
     {#if $visuals.box2d}
-        <div class="box2d" style="
-            left: {BOX.x}px; top: {BOX.y}px; width: {BOX.w}px; height: {BOX.h}px;
-            border-color: {$visuals.box2d_color};
-            border-width: {$visuals.box2d_thickness}px;
-            box-shadow: {$visuals.outline ? '0 0 0 1px rgba(0,0,0,0.85)' : 'none'};
-            background: {$visuals.box2d_fill ? $visuals.box2d_fill_color + '40' : 'transparent'};
-        "></div>
+        {#if $visuals.box2d_style === "Corner"}
+            {@const cl = Math.min(BOX.w, BOX.h) * 0.25}
+            {@const cornerPath =
+                `M ${BOX.x} ${BOX.y + cl} L ${BOX.x} ${BOX.y} L ${BOX.x + cl} ${BOX.y} ` +
+                `M ${BOX.x + BOX.w - cl} ${BOX.y} L ${BOX.x + BOX.w} ${BOX.y} L ${BOX.x + BOX.w} ${BOX.y + cl} ` +
+                `M ${BOX.x} ${BOX.y + BOX.h - cl} L ${BOX.x} ${BOX.y + BOX.h} L ${BOX.x + cl} ${BOX.y + BOX.h} ` +
+                `M ${BOX.x + BOX.w - cl} ${BOX.y + BOX.h} L ${BOX.x + BOX.w} ${BOX.y + BOX.h} L ${BOX.x + BOX.w} ${BOX.y + BOX.h - cl}`}
+            {#if $visuals.box2d_fill}
+                <div class="box2d" style="
+                    left: {BOX.x}px; top: {BOX.y}px; width: {BOX.w}px; height: {BOX.h}px;
+                    border-width: 0;
+                    background: {$visuals.box2d_fill_color + '40'};
+                "></div>
+            {/if}
+            <svg class="layer" viewBox="0 0 {W} {H}">
+                {#if $visuals.outline}
+                    <path d={cornerPath} fill="none"
+                          stroke="rgba(0,0,0,0.75)" stroke-width={$visuals.box2d_thickness + 1.5} />
+                {/if}
+                <path d={cornerPath} fill="none"
+                      stroke={$visuals.box2d_color} stroke-width={$visuals.box2d_thickness} />
+            </svg>
+        {:else}
+            <div class="box2d" style="
+                left: {BOX.x}px; top: {BOX.y}px; width: {BOX.w}px; height: {BOX.h}px;
+                border-color: {$visuals.box2d_color};
+                border-width: {$visuals.box2d_thickness}px;
+                box-shadow: {$visuals.outline ? '0 0 0 1px rgba(0,0,0,0.85)' : 'none'};
+                background: {$visuals.box2d_fill ? $visuals.box2d_fill_color + '40' : 'transparent'};
+            "></div>
+        {/if}
     {/if}
 
     {#if $visuals.avatar_head}

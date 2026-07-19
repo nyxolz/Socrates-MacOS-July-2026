@@ -38,9 +38,19 @@ pub struct AimbotCfg {
 
     // Prediction
     pub prediction_enabled: bool,
+    /// Horizontal (X/Z) lead multiplier. 1.0 = physically-correct lead for the
+    /// given projectile speed; <1 under-leads, >1 over-leads.
     pub prediction_strength: f32,
+    /// Vertical (Y) lead multiplier, applied separately so jumping / falling
+    /// targets can be led more or less than horizontal movement. 1.0 = same as
+    /// horizontal, 0 = no vertical lead.
+    pub prediction_y: f32,
     pub velocity_prediction: bool,
+    /// Projectile speed in studs/s. Travel time = distance / this, which drives
+    /// both velocity lead and bullet-drop. Hitscan-ish weapons want a high value.
+    pub projectile_speed: f32,
     pub bullet_drop_comp: bool,
+    /// Gravity (studs/s²) used for bullet-drop compensation. Roblox default 196.2.
     pub gravity_comp: f32,
 
     // Targeting filters
@@ -55,6 +65,10 @@ pub struct AimbotCfg {
     pub trigger_delay: f32,
     pub trigger_keybind: String,
     pub trigger_burst: bool,
+    /// When on, the trigger bot also drives the aimbot (using the currently
+    /// selected `aim_type`) onto whichever target sits inside the FOV, then
+    /// left-clicks — a combined auto-aim + auto-fire.
+    pub trigger_aim: bool,
 
     // Legit
     pub legit_enabled: bool,
@@ -96,9 +110,11 @@ impl Default for AimbotCfg {
 
             prediction_enabled: false,
             prediction_strength: 1.0,
+            prediction_y: 1.0,
             velocity_prediction: true,
+            projectile_speed: 300.0,
             bullet_drop_comp: false,
-            gravity_comp: 0.0,
+            gravity_comp: 196.2,
 
             selection_mode: "Crosshair".into(),
             wall_check: false,
@@ -110,6 +126,7 @@ impl Default for AimbotCfg {
             trigger_delay: 50.0,
             trigger_keybind: "MouseLeft".into(),
             trigger_burst: false,
+            trigger_aim: false,
 
             legit_enabled: false,
             legit_miss: 0.3,
@@ -259,6 +276,8 @@ pub struct MiscCfg {
     pub hip_height: f32,
     pub jump_power_enabled: bool,
     pub jump_power: f32,
+    pub walk_speed_enabled: bool,
+    pub walk_speed: f32,
     pub display_distance_enabled: bool,
     pub display_distance: f32,
     pub fly_enabled: bool,
@@ -268,6 +287,11 @@ pub struct MiscCfg {
     /// No-clip: continuously force CanCollide = false on the local character's
     /// parts so it passes through walls / objects.
     pub noclip_enabled: bool,
+    /// Click teleport: while enabled, pressing `tp_click_keybind` teleports the
+    /// local character to the ground point under the cursor (camera ray ∩ the
+    /// horizontal plane at the character's current height).
+    pub tp_click_enabled: bool,
+    pub tp_click_keybind: String,
 }
 
 impl Default for MiscCfg {
@@ -277,12 +301,16 @@ impl Default for MiscCfg {
             hip_height: 2.0,
             jump_power_enabled: false,
             jump_power: 50.0,
+            walk_speed_enabled: false,
+            walk_speed: 16.0,
             display_distance_enabled: false,
             display_distance: 100.0,
             fly_enabled: false,
             fly_keybind: String::new(),
             fly_speed: 5.0,
             noclip_enabled: false,
+            tp_click_enabled: false,
+            tp_click_keybind: "MouseRight".into(),
         }
     }
 }
@@ -361,7 +389,13 @@ pub struct AppState {
     /// unlike char_addr). `0` = enemy (default — any name absent from the map
     /// is treated as enemy), `1` = ally, `2` = neutral. Enemies get aimbot +
     /// full ESP; allies get only a green head dot; neutrals are ignored.
-    pub player_relations: Mutex<HashMap<String, u8>>,
+    ///
+    /// `Arc`-wrapped so the ESP (60Hz) and aimbot (up to 1000Hz) hot loops
+    /// can grab a reference every tick with an atomic refcount bump instead
+    /// of re-hashing/re-allocating the whole map on every single read.
+    /// Writers (`set_player_relation`) build a modified clone and swap the
+    /// Arc — same copy-on-write idiom as `char_caches`.
+    pub player_relations: Mutex<Arc<HashMap<String, u8>>>,
 
     /// Set by the "Reset ESP" button. The cache thread sees it, drops its
     /// remembered containers and the current cache, and does a fresh full
@@ -394,6 +428,35 @@ pub struct AppState {
     /// backend on every launch regardless of what's currently rendered. False
     /// until the frontend calls `set_key_unlocked(true)` with a validated key.
     pub key_unlocked: AtomicBool,
+
+    /// The license key currently in use, pushed by the frontend on activation
+    /// and cleared on logout. The license-watch thread re-validates it every
+    /// few seconds so a key deleted/blacklisted on the dashboard kicks the user
+    /// out live, without waiting for the app to restart.
+    pub license_token: Mutex<Option<String>>,
+
+    // ─── Dev tab — advanced diagnostics (flicker root-cause hunting) ─────
+    /// Incremented every ESP loop iteration. Rate should sit ~60/s; a
+    /// dip means the thread stalled that tick (blocking read, lock wait…).
+    pub diag_esp_ticks: AtomicU64,
+    /// Incremented every time an in-range player is dropped from the frame
+    /// this tick because every part read came back invalid (NaN/zero) —
+    /// i.e. the exact moment a player's ESP would blink off for one frame.
+    pub diag_esp_players_culled: AtomicU64,
+    /// Incremented when the camera position jumps further in one 16 ms tick
+    /// than any real camera pan could cover — the signature of a torn
+    /// (non-atomic) memory read of the CFrame.
+    pub diag_esp_camera_jumps: AtomicU64,
+    /// Incremented every char-cache thread iteration (~every 500-700ms).
+    pub diag_cache_ticks: AtomicU64,
+    /// Incremented every time the cache thread falls back to the expensive
+    /// full Workspace walk instead of the cheap known-containers rescan.
+    /// Should track the periodic 4s refresh (~0.25/s) once stable — a much
+    /// higher rate means the cheap path is failing / not being reused.
+    pub diag_cache_full_walks: AtomicU64,
+    /// Container addr count the cheap rescan path currently remembers.
+    /// 0 after the first tick means the fast path never got populated.
+    pub diag_cache_known_containers: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for AppState {
@@ -412,13 +475,20 @@ impl Default for AppState {
             local_humanoid_addr: AtomicU64::new(0),
             misc_cfg: Mutex::new(MiscCfg::default()),
             spectate_target: Mutex::new(0),
-            player_relations: Mutex::new(HashMap::new()),
+            player_relations: Mutex::new(Arc::new(HashMap::new())),
             esp_reset_requested: AtomicBool::new(false),
             object_esp_enabled: AtomicBool::new(false),
             aimbot_locked_target: AtomicU64::new(0),
             bullet_vis_traces: Mutex::new(Vec::new()),
             bullet_vis_hit_count: AtomicU64::new(0),
             key_unlocked: AtomicBool::new(false),
+            license_token: Mutex::new(None),
+            diag_esp_ticks: AtomicU64::new(0),
+            diag_esp_players_culled: AtomicU64::new(0),
+            diag_esp_camera_jumps: AtomicU64::new(0),
+            diag_cache_ticks: AtomicU64::new(0),
+            diag_cache_full_walks: AtomicU64::new(0),
+            diag_cache_known_containers: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }

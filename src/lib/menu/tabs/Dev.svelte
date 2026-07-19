@@ -9,6 +9,50 @@
     let error = "";
     let timer = 0;
 
+    // ─── Advanced diagnostics — flicker root-cause hunting ─────────────
+    // Backend counters are monotonic; we diff consecutive 1s snapshots to
+    // get rates. A spike in `culled/s` is the direct signature of "a
+    // player's ESP blinked off this frame"; `jumps/s` tests the camera-tear
+    // theory; `full walks/s` tests whether the char-cache thread's cheap
+    // path is actually being reused.
+    type DiagStats = {
+        esp_ticks: number;
+        esp_players_culled: number;
+        esp_camera_jumps: number;
+        cache_ticks: number;
+        cache_full_walks: number;
+        cache_known_containers: number;
+        char_caches_len: number;
+        read_ok: number;
+        read_fail: number;
+    };
+    let diagPrev: DiagStats | null = null;
+    let diagCur: DiagStats | null = null;
+    let diagRates = {
+        espHz: 0, culledPerSec: 0, jumpsPerSec: 0,
+        cacheHz: 0, fullWalksPerSec: 0, readsPerSec: 0, failPerSec: 0,
+    };
+    let diagTimer = 0;
+    async function refreshDiag() {
+        try {
+            const snap = await invoke<DiagStats>("get_diag_stats");
+            if (diagCur) {
+                diagPrev = diagCur;
+                const d = (a: number, b: number) => Math.max(0, a - b);
+                diagRates = {
+                    espHz: d(snap.esp_ticks, diagPrev.esp_ticks),
+                    culledPerSec: d(snap.esp_players_culled, diagPrev.esp_players_culled),
+                    jumpsPerSec: d(snap.esp_camera_jumps, diagPrev.esp_camera_jumps),
+                    cacheHz: d(snap.cache_ticks, diagPrev.cache_ticks),
+                    fullWalksPerSec: d(snap.cache_full_walks, diagPrev.cache_full_walks),
+                    readsPerSec: d(snap.read_ok, diagPrev.read_ok),
+                    failPerSec: d(snap.read_fail, diagPrev.read_fail),
+                };
+            }
+            diagCur = snap;
+        } catch { /* not attached yet */ }
+    }
+
     let objectEsp = false;
     $: invoke("set_object_esp", { enabled: objectEsp }).catch(() => {});
 
@@ -29,9 +73,12 @@
     onMount(() => {
         refresh();
         timer = window.setInterval(refresh, 1000);
+        refreshDiag();
+        diagTimer = window.setInterval(refreshDiag, 1000);
     });
     onDestroy(() => {
         clearInterval(timer);
+        clearInterval(diagTimer);
         // Don't leave the heavy object walk running once the tab is closed.
         invoke("set_object_esp", { enabled: false }).catch(() => {});
     });

@@ -1,4 +1,6 @@
 import { writable, get as getStore, type Writable } from "svelte/store";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export type TabId =
     | "Aiming"
@@ -136,7 +138,9 @@ export type AimbotCfg = {
 
     prediction_enabled: boolean;
     prediction_strength: number;
+    prediction_y: number;
     velocity_prediction: boolean;
+    projectile_speed: number;
     bullet_drop_comp: boolean;
     gravity_comp: number;
 
@@ -150,6 +154,7 @@ export type AimbotCfg = {
     trigger_delay: number;
     trigger_keybind: string;
     trigger_burst: boolean;
+    trigger_aim: boolean;
 
     legit_enabled: boolean;
     legit_miss: number;
@@ -179,9 +184,11 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
 
     prediction_enabled: false,
     prediction_strength: 1.0,
-    velocity_prediction: false,
+    prediction_y: 1.0,
+    velocity_prediction: true,
+    projectile_speed: 300,
     bullet_drop_comp: false,
-    gravity_comp: 0,
+    gravity_comp: 196.2,
 
     selection_mode: "Crosshair",
     wall_check: false,
@@ -193,6 +200,7 @@ export const AIMBOT_DEFAULTS: AimbotCfg = {
     trigger_delay: 50,
     trigger_keybind: "MouseLeft",
     trigger_burst: false,
+    trigger_aim: false,
 
     legit_enabled: false,
     legit_miss: 0.3,
@@ -217,6 +225,7 @@ persist(AIMBOT_KEY, aimbot);
 export type TracerOrigin = "Top" | "Center" | "Bottom";
 export type LabelAnchorX = "L" | "C" | "R";
 export type LabelAnchorY = "T" | "C" | "B";
+export type BoxStyle = "Full" | "Corner";
 
 export type VisualsCfg = {
     // Global
@@ -229,6 +238,7 @@ export type VisualsCfg = {
 
     // Box 2D
     box2d: boolean;
+    box2d_style: BoxStyle;
     box2d_color: string;
     box2d_fill: boolean;
     box2d_fill_color: string;
@@ -236,6 +246,7 @@ export type VisualsCfg = {
 
     // Box 3D
     box3d: boolean;
+    box3d_style: BoxStyle;
     box3d_color: string;
     box3d_fill: boolean;
     box3d_fill_color: string;
@@ -328,12 +339,14 @@ export const VISUALS_DEFAULTS: VisualsCfg = {
     skeleton_thickness: 1.5,
 
     box2d: true,
+    box2d_style: "Full",
     box2d_color: "#ffffff",
     box2d_fill: false,
     box2d_fill_color: "#ffffff",
     box2d_thickness: 1.5,
 
     box3d: false,
+    box3d_style: "Full",
     box3d_color: "#ffffff",
     box3d_fill: false,
     box3d_fill_color: "#ffffff",
@@ -409,12 +422,16 @@ export type MiscCfg = {
     hip_height: number;
     jump_power_enabled: boolean;
     jump_power: number;
+    walk_speed_enabled: boolean;
+    walk_speed: number;
     display_distance_enabled: boolean;
     display_distance: number;
     fly_enabled: boolean;
     fly_keybind: string;
     fly_speed: number;
     noclip_enabled: boolean;
+    tp_click_enabled: boolean;
+    tp_click_keybind: string;
 };
 
 export const MISC_DEFAULTS: MiscCfg = {
@@ -422,12 +439,16 @@ export const MISC_DEFAULTS: MiscCfg = {
     hip_height: 2,
     jump_power_enabled: false,
     jump_power: 50,
+    walk_speed_enabled: false,
+    walk_speed: 16,
     display_distance_enabled: false,
     display_distance: 100,
     fly_enabled: false,
     fly_keybind: "",
     fly_speed: 5,
     noclip_enabled: false,
+    tp_click_enabled: false,
+    tp_click_keybind: "MouseRight",
 };
 // Misc tab settings are never persisted — always reset to defaults
 // (disabled) on every Socrate restart.
@@ -454,12 +475,10 @@ export const menuOptions: Writable<MenuOptionsCfg> = writable(
 );
 persist(MENU_OPTS_KEY, menuOptions);
 
-// ─── Work.ink key gate ─────────────────────────────────────────────
-// The user redeems a key on your work.ink link; Socrate validates it
-// (single-use) and stores the resulting expiry locally, re-prompting once it
-// lapses.
-export const WORKINK_URL = "https://work.ink/20wQ/6873f7ac-e68c-405c-a79e-90b4a4c68e75";
-
+// ─── KeyAuth key gate ────────────────────────────────────────────────
+// The user pastes a KeyAuth license key; Socrate validates it server-side
+// (bound to this machine's hwid) and stores the resulting expiry locally,
+// re-prompting once it lapses.
 const KEY_STORE = "socrate.key";
 type StoredKey = { token: string; expiresAfter: number };
 
@@ -474,12 +493,16 @@ export function saveKey(token: string, expiresAfter: number) {
     if (typeof localStorage !== "undefined") {
         localStorage.setItem(KEY_STORE, JSON.stringify({ token, expiresAfter }));
     }
+    // Hand the token to the backend license-watch thread so it can re-validate
+    // it every few seconds and kick the user out live if it gets revoked.
+    invoke("set_license_token", { token }).catch(() => {});
     keyUnlocked.set(true);
     checkKeyExpiry();
 }
 
 export function clearKey() {
     if (typeof localStorage !== "undefined") localStorage.removeItem(KEY_STORE);
+    invoke("set_license_token", { token: null }).catch(() => {});
     keyUnlocked.set(false);
     keyTimeLeftMs.set(0);
 }
@@ -487,7 +510,7 @@ export function clearKey() {
 /// True when a stored key exists and hasn't expired yet.
 export function isKeyValid(): boolean {
     const k = loadStoredKey();
-    // expiresAfter is Unix-millis from work.ink; 0 means "no expiry recorded".
+    // expiresAfter is Unix-millis from KeyAuth; 0 means "no expiry recorded" (lifetime).
     return !!k && (k.expiresAfter === 0 || k.expiresAfter > Date.now());
 }
 
@@ -525,9 +548,60 @@ function checkKeyExpiry() {
     keyUnlocked.set(true);
 }
 
+type KeyauthResult = {
+    valid: boolean;
+    expires_after: number;
+    network_error: boolean;
+    version_blocked: boolean;
+    latest_version: string;
+};
+
+/// Re-checks the stored key against the KeyAuth server itself, not just the
+/// local clock — catches a key that's been deleted/blacklisted/hwid-reset on
+/// the dashboard since it was last redeemed. A key that's simply unreachable
+/// (offline) must NOT log the user out — `checkKeyExpiry` already owns the
+/// "fails open on no connectivity" contract — so this only acts on an
+/// explicit "invalid" verdict from the server.
+///
+/// On invalid: clears the stored key, which flips `keyUnlocked` false. That
+/// alone closes the gate — `Menu.svelte` swaps the whole tab body for
+/// `KeyGate` and `bridge.ts`'s kill switch disables every feature thread —
+/// so the user is bounced straight back to the key-entry screen.
+async function revalidateKeyWithServer() {
+    const k = loadStoredKey();
+    if (!k) return;
+    try {
+        const res = await invoke<KeyauthResult>("validate_keyauth_key", { token: k.token });
+        if (res.network_error) return;
+        if (res.version_blocked) {
+            // This build was disabled server-side — show the message and quit.
+            invoke("report_version_blocked", { latest: res.latest_version }).catch(() => {});
+            return;
+        }
+        if (!res.valid) {
+            clearKey();
+            return;
+        }
+        // Still authoritatively valid — keep the cached expiry in sync in
+        // case the subscription was extended/shortened remotely.
+        saveKey(k.token, res.expires_after);
+    } catch {
+        /* couldn't reach Tauri/network — treat like offline, don't log out */
+    }
+}
+
 if (typeof window !== "undefined") {
     checkKeyExpiry();
     setInterval(checkKeyExpiry, 1000);
+    // Hand the stored token to the backend watcher on launch, then let its 5 s
+    // loop own live re-validation. One immediate frontend check catches a key
+    // already revoked before the app even opened.
+    const boot = loadStoredKey();
+    if (boot) invoke("set_license_token", { token: boot.token }).catch(() => {});
+    revalidateKeyWithServer();
+    // The backend `license_watch` thread re-checks every 5 s and emits this
+    // when the key is revoked; bounce the user straight back to the key screen.
+    listen("license_revoked", () => clearKey());
 }
 
 // ─── Bulk apply / export — used by the Configs tab ─────────────────

@@ -203,6 +203,14 @@ pub fn run() {
             // any overlay/thread so nothing of Socrate appears for blocked users.
             if !telemetry::gate_and_start() { std::process::exit(0); }
 
+            // Version gate: if this build was disabled server-side, show the
+            // "new version" message and quit here — BEFORE any overlay window or
+            // thread runs, so a dead build never launches. Fails open when the
+            // server is unreachable (the 5 s watcher catches it once online).
+            if let Some(latest) = key::version_gate_check() {
+                key::report_version_blocked(latest); // native dialog + process::exit(0)
+            }
+
             unsafe { setup_window_overlay(&window); }
 
             start_window_tracker(window.clone(), app.handle().clone());
@@ -214,6 +222,9 @@ pub fn run() {
             start_aimbot_thread(app.handle().clone());
             start_spectate_thread(app.handle().clone());
             start_menu_hotkey_thread(app.handle().clone());
+            // Live license watcher: boots the user out within ~5 s if the key
+            // is deleted/blacklisted on the dashboard.
+            key::start_license_watch_thread(app.handle().clone());
 
             // Background anti-RE watcher: Frida / lldb / sysctl P_TRACED.
             #[cfg(target_os = "macos")]
@@ -228,6 +239,7 @@ pub fn run() {
             commands::panic_exit,
             commands::attach_sdk,
             commands::sdk_status,
+            commands::get_diag_stats,
             commands::set_aimbot_config,
             commands::set_visuals_config,
             commands::set_misc_config,
@@ -253,7 +265,9 @@ pub fn run() {
             commands::get_version,
             commands::check_remote_version,
             commands::set_key_unlocked,
-            key::validate_workink_key,
+            commands::set_license_token,
+            key::validate_keyauth_key,
+            key::report_version_blocked,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

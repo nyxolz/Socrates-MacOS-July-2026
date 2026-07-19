@@ -165,6 +165,7 @@ pub fn always_false() -> bool {
 // key itself is computed via a small loop the optimiser can fold but the
 // raw constant never appears as a 64-bit immediate.
 
+#[allow(dead_code)]
 static RT_KEY: Lazy<u64> = Lazy::new(|| {
     let mut k: u64 = 0x6c1b_3b81_1234_5678;
     for i in 0..7 {
@@ -176,8 +177,10 @@ static RT_KEY: Lazy<u64> = Lazy::new(|| {
 });
 
 /// The actual key the const XOR encodings below were baked against.
+#[allow(dead_code)]
 const KEY_USED_AT_COMPILE: u64 = compute_key();
 
+#[allow(dead_code)]
 const fn compute_key() -> u64 {
     let mut k: u64 = 0x6c1b_3b81_1234_5678;
     let mut i: u64 = 0;
@@ -190,33 +193,67 @@ const fn compute_key() -> u64 {
     k
 }
 
-// ARM and Intel Roblox builds expose two different `base + entry` offsets, but
-// the same chain: the slot points at the FakeDataModel and its `+0x18` field
-// holds the live DataModel.
-//   • ARM  : `read(base + 0x620CE30)` → FakeDataModel*, then `read(+0x18)` → DataModel.
-//   • Intel: `read(base + 0x65AAFE8)` → FakeDataModel*, then `read(+0x18)` → DataModel.
-// All offsets are XOR-obfuscated; the active pair is selected at compile time
-// via `#[cfg(target_arch = …)]` below.
-#[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMARM:   u64 = 0x620CE30u64 ^ KEY_USED_AT_COMPILE;
-#[allow(dead_code)]
-const ENC_ENTRY_FAKE_DMINTEL: u64 = 0x65AAFE8u64 ^ KEY_USED_AT_COMPILE; // Fakedatamodel change at update
-const ENC_FDM_DATAMODEL:      u64 = 0x18u64      ^ KEY_USED_AT_COMPILE;
-const ENC_DM_WORKSPACE:       u64 = 0x168u64     ^ KEY_USED_AT_COMPILE;
-const ENC_WS_CAMERA:          u64 = 0x460u64     ^ KEY_USED_AT_COMPILE;
+// ─── Server-delivered resolve-chain offsets ─────────────────────────────
+// The offsets that gate EVERYTHING — base → FakeDataModel → DataModel →
+// Workspace → Camera — are NOT compiled into the binary. They are fetched from
+// the `key-validate` Edge Function, inside the Ed25519-signed verdict, only
+// after a valid licence check, and stored here at runtime. Every resolver below
+// returns None until they arrive, so a patched binary that forces the licence
+// boolean still has nothing to resolve — no ESP, no aimbot, nothing works
+// without a genuine server response an attacker can't forge.
+// Only the two offsets that actually move on a Roblox update — the
+// FakeDataModel base offset and the FakeDataModel→DataModel pointer — are
+// server-delivered (and admin-editable in the PaymentGate dashboard). They are
+// the gate: without `fdm_entry` the app resolves nothing. The rest of the chain
+// (Workspace, Camera) rarely changes and stays as constants below.
+#[derive(Clone, Copy, Default)]
+pub struct ChainOffsets {
+    /// `base + fdm_entry` → FakeDataModel* (arch-specific, already picked server-side).
+    pub fdm_entry: u64,
+    /// FakeDataModel + this → DataModel (arch-specific).
+    pub fdm_datamodel: u64,
+}
 
-#[cfg(target_arch = "aarch64")]
+/// DataModel + this → Workspace. Stable across builds — kept in the binary.
+const OFF_DM_WORKSPACE: u64 = 0x150;
+/// Workspace + this → Camera. Stable across builds — kept in the binary.
+const OFF_WS_CAMERA: u64 = 0x438;
+
+static CHAIN: Lazy<std::sync::RwLock<Option<ChainOffsets>>> =
+    Lazy::new(|| std::sync::RwLock::new(None));
+
+/// Store the server-delivered resolve-chain offsets (called from `key.rs` after
+/// a verified verdict). Any zero field clears the table (fail closed).
+pub fn set_chain_offsets(o: ChainOffsets) {
+    let ok = o.fdm_entry != 0 && o.fdm_datamodel != 0;
+    *CHAIN.write().unwrap() = if ok { Some(o) } else { None };
+}
+
+/// True once working offsets have been received from the server.
+pub fn offsets_ready() -> bool {
+    CHAIN.read().unwrap().is_some()
+}
+
+fn chain() -> Option<ChainOffsets> {
+    *CHAIN.read().unwrap()
+}
+
 #[inline(never)]
-fn off_entry_fake_dm_arm()   -> u64 { ENC_ENTRY_FAKE_DMARM   ^ *RT_KEY }
-#[cfg(target_arch = "x86_64")]
+fn off_fdm_entry() -> u64 {
+    chain().map(|c| c.fdm_entry).unwrap_or(0)
+}
 #[inline(never)]
-fn off_entry_fake_dm_intel() -> u64 { ENC_ENTRY_FAKE_DMINTEL ^ *RT_KEY }
+fn off_fdm_datamodel() -> u64 {
+    chain().map(|c| c.fdm_datamodel).unwrap_or(0)
+}
 #[inline(never)]
-fn off_fdm_datamodel()       -> u64 { ENC_FDM_DATAMODEL      ^ *RT_KEY }
+pub fn off_dm_workspace() -> u64 {
+    OFF_DM_WORKSPACE
+}
 #[inline(never)]
-pub fn off_dm_workspace()    -> u64 { ENC_DM_WORKSPACE       ^ *RT_KEY }
-#[inline(never)]
-pub fn off_ws_camera()       -> u64 { ENC_WS_CAMERA          ^ *RT_KEY }
+pub fn off_ws_camera() -> u64 {
+    OFF_WS_CAMERA
+}
 
 /// Display string for the active build target (consumed by the menu).
 pub const fn arch_name() -> &'static str {
@@ -233,25 +270,15 @@ pub const fn arch_name() -> &'static str {
 
 use crate::sdk::SdkI;
 
-/// ARM build: `base + 0x6198540` points at the FakeDataModel; its `+0x18` field
+/// `base + fdm_entry` points at the FakeDataModel; its `fdm_datamodel` field
 /// holds the live DataModel. Both reads happen every call so leaving/rejoining
-/// a game resolves the new DataModel.
-#[cfg(target_arch = "aarch64")]
+/// a game resolves the new DataModel. Returns None until the server has
+/// delivered the offsets (fail closed).
 #[inline(never)]
 pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
-    let fdm = sdk.read::<u64>(sdk.base + off_entry_fake_dm_arm());
-    if !sdk.is_valid_ptr(fdm) { return None; }
-    let dm = sdk.read::<u64>(fdm + off_fdm_datamodel());
-    if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
-}
-
-/// Intel build: `base + 0x654F608` points at the FakeDataModel; its `+0x18`
-/// field holds the live DataModel. Both reads happen every call so
-/// leaving/rejoining a game resolves the new DataModel.
-#[cfg(target_arch = "x86_64")]
-#[inline(never)]
-pub fn resolve_data_model(sdk: &SdkI) -> Option<u64> {
-    let fdm = sdk.read::<u64>(sdk.base + off_entry_fake_dm_intel());
+    let entry = off_fdm_entry();
+    if entry == 0 { return None; } // no server offsets yet → resolve nothing
+    let fdm = sdk.read::<u64>(sdk.base + entry);
     if !sdk.is_valid_ptr(fdm) { return None; }
     let dm = sdk.read::<u64>(fdm + off_fdm_datamodel());
     if sdk.is_valid_ptr(dm) { Some(dm) } else { None }
@@ -264,16 +291,26 @@ pub fn resolve_workspace(sdk: &SdkI) -> Option<u64> {
     if sdk.is_valid_ptr(ws) { Some(ws) } else { None }
 }
 
-/// Resolves Workspace.CurrentCamera by walking Workspace's children and
-/// matching `Name == "Camera"` — name lookup survives Roblox layout shifts
-/// that break the static `+0x460` field offset. The static offset is tried
-/// only as a cheap fallback if the name walk comes up empty (e.g. during a
-/// load screen where the children list is briefly empty).
+/// Resolves Workspace.CurrentCamera.
+///
+/// Tries the static field offset FIRST — one `u64` read — and only falls
+/// back to walking every child of Workspace by name if that comes up empty
+/// (stale offset after a Roblox update, or a load screen where the field
+/// isn't populated yet). This used to be the other way around: a full
+/// by-name scan of Workspace's children ran on *every* call before ever
+/// trying the offset. Workspace can hold thousands of children (all loaded
+/// map geometry via StreamingEnabled), and each one costs a handful of
+/// reads just to fetch its name — that's 60 times a second from the ESP
+/// thread alone, plus up to 1000 times a second from the aimbot thread
+/// while aiming. It was the single biggest source of overlay/aim latency,
+/// and got worse the more of the map was streamed in (i.e. exactly while
+/// moving around) — mistaken for "lag" but really this one function eating
+/// the entire frame budget.
 #[inline(never)]
 pub fn resolve_camera(sdk: &SdkI) -> Option<u64> {
     let ws = resolve_workspace(sdk)?;
-    let by_name = crate::sdk::instance::find_first_child(sdk, ws, "Camera");
-    if by_name != 0 { return Some(by_name); }
     let cam = sdk.read::<u64>(ws + off_ws_camera());
-    if sdk.is_valid_ptr(cam) { Some(cam) } else { None }
+    if sdk.is_valid_ptr(cam) { return Some(cam); }
+    let by_name = crate::sdk::instance::find_first_child(sdk, ws, "Camera");
+    if by_name != 0 { Some(by_name) } else { None }
 }

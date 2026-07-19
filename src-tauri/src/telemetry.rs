@@ -46,8 +46,9 @@ const TICKET_URL: &str = "https://usesocrate.xyz";
 
 // ─── Machine identity ───────────────────────────────────────────────
 
-/// macOS hardware UUID — stable per machine, our `pc_id`.
-fn pc_uuid() -> String {
+/// macOS hardware UUID — stable per machine, our `pc_id`. Also used by
+/// `key.rs` as the KeyAuth HWID so a license stays bound to one Mac.
+pub(crate) fn pc_uuid() -> String {
     let out = std::process::Command::new("ioreg")
         .args(["-rd1", "-c", "IOPlatformExpertDevice"])
         .output();

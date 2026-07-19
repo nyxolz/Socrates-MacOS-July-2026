@@ -5,7 +5,22 @@
     import Toggle from "../controls/Toggle.svelte";
     import ColorPicker from "../controls/ColorPicker.svelte";
     import KeybindInput from "../controls/KeybindInput.svelte";
-    import { localVersion, remoteVersion, lastVersionCheck, updateAvailable, menuOptions, theme, THEME_PRESETS } from "../stores";
+    import { localVersion, remoteVersion, lastVersionCheck, updateAvailable, menuOptions, theme, THEME_PRESETS, clearKey, keyTimeLeftMs } from "../stores";
+
+    function logoutKey() {
+        clearKey();
+    }
+
+    function formatKeyTime(ms: number): string {
+        if (ms <= 0) return "—";
+        const totalSec = Math.floor(ms / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        if (h > 0) return `${h}h ${m}m`;
+        if (m > 0) return `${m}m ${s}s`;
+        return `${s}s`;
+    }
 
     const UPDATE_CMD = "curl -fsSL usesocrate.xyz/luncher.sh | sh";
     let copied = false;
@@ -76,6 +91,16 @@
             {diagOk ? "✓ Offset Updated" : "✗ Offset out of date"}
         </div>
         <div class="sub">build: <span class="arch">{arch || "…"}</span></div>
+    </Section>
+    <Section title="Key" icon="lock" active>
+        <div class="row">
+            <span class="lbl">Time left</span>
+            <span class="val mono">{formatKeyTime($keyTimeLeftMs)}</span>
+        </div>
+        <div class="cmd-row">
+            <button class="btn logout" on:click={logoutKey}>Disconnect key</button>
+        </div>
+        <div class="muted">Clears the saved key and returns to the unlock screen.</div>
     </Section>
     <Section title="Privacy" icon="eye" active={$menuOptions.stream_proof}>
         <div class="row">
@@ -206,6 +231,8 @@
         transition: border-color 140ms var(--ease), color 140ms var(--ease);
     }
     .btn:hover { border-color: var(--accent); color: var(--accent); }
+    .btn.logout { border-color: rgba(255, 91, 91, 0.55); color: #ff8a8a; }
+    .btn.logout:hover { border-color: #ff5b5b; color: #ff5b5b; background: rgba(255, 91, 91, 0.08); }
     .muted {
         font-size: 10px;
         color: var(--text-muted);

@@ -7,22 +7,21 @@ use super::process::SdkI;
 
 #[allow(non_camel_case_types)]
 pub enum Instance {
-    Parent = 0x070,
-    ChildrenList = 0x078,
-    Name = 0x0B0,
+    Parent = 0x068,
+    ChildrenList = 0x070,
+    Name = 0x098,
 }
 
 /// Read up to `max` printable ASCII bytes from `addr`, stopping at NUL or
 /// the first non-printable byte. Shared by both arch implementations of
 /// `read_string` below.
 fn read_cstr(sdk: &SdkI, addr: u64, max: u64) -> String {
-    let mut out = String::with_capacity(max.min(64) as usize);
-    for i in 0..max {
-        let b = sdk.read::<u8>(addr + i);
-        if b == 0 || !(32..=126).contains(&b) { break; }
-        out.push(b as char);
-    }
-    out
+    // One bulk read instead of up to `max` individual 1-byte syscalls — this
+    // runs per-child in every by-name tree walk (Explorer, resolve_camera's
+    // fallback path), so on a large Workspace it used to be the dominant cost.
+    let bytes = sdk.vm_read_bulk(addr, max as usize);
+    bytes.iter().take_while(|&&b| b != 0 && (32..=126).contains(&b))
+        .map(|&b| b as char).collect()
 }
 
 /// ARM Roblox: the string field stores a raw `char*` at offset 0. One read

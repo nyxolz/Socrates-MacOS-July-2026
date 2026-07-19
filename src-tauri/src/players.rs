@@ -168,11 +168,10 @@ pub fn find_child_fast(sdk: &SdkI, instance: u64, target: &str) -> u64 {
         if sdk.read::<u64>(child + Instance::Parent as u64) != instance { continue; }
         let name_ptr = sdk.read::<u64>(child + Instance::Name as u64);
         if !sdk.is_valid_ptr(name_ptr) { continue; }
-        let mut buf = [0u8; 33];
-        for j in 0..(target_len + 1) {
-            buf[j] = sdk.read::<u8>(name_ptr + j as u64);
-        }
-        if &buf[..target_len] == target_bytes && buf[target_len] == 0 {
+        // One bulk read of `target_len + 1` bytes instead of up to 33
+        // individual 1-byte syscalls per candidate child.
+        let buf = sdk.vm_read_bulk(name_ptr, target_len + 1);
+        if buf.len() == target_len + 1 && &buf[..target_len] == target_bytes && buf[target_len] == 0 {
             return child;
         }
     }
@@ -199,11 +198,9 @@ pub fn find_child_fast(sdk: &SdkI, instance: u64, target: &str) -> u64 {
             Some(v) => v, None => continue,
         };
         if len as usize != target_len { continue; }
-        let mut buf = [0u8; 32];
-        for j in 0..target_len {
-            buf[j] = sdk.read::<u8>(data_addr + j as u64);
-        }
-        if &buf[..target_len] == target_bytes {
+        // One bulk read instead of up to 32 individual 1-byte syscalls.
+        let buf = sdk.vm_read_bulk(data_addr, target_len);
+        if buf.len() == target_len && buf.as_slice() == target_bytes {
             return child;
         }
     }
@@ -214,11 +211,8 @@ pub fn find_child_fast(sdk: &SdkI, instance: u64, target: &str) -> u64 {
 pub fn read_name_fast(sdk: &SdkI, instance: u64) -> String {
     let name_ptr = sdk.read::<u64>(instance + Instance::Name as u64);
     if !sdk.is_valid_ptr(name_ptr) { return String::new(); }
-    let mut bytes = [0u8; 64];
-    for i in 0..64u64 {
-        bytes[i as usize] = sdk.read::<u8>(name_ptr + i);
-        if bytes[i as usize] == 0 { break; }
-    }
+    // One bulk read instead of up to 64 individual 1-byte syscalls.
+    let bytes = sdk.vm_read_bulk(name_ptr, 64);
     bytes.iter().take_while(|&&b| b != 0 && b >= 32 && b <= 126)
         .map(|&b| b as char).collect()
 }
@@ -229,24 +223,20 @@ pub fn read_name_fast(sdk: &SdkI, instance: u64) -> String {
     let (data_addr, len) = match intel_name_locate(sdk, strobj) {
         Some(v) => v, None => return String::new(),
     };
-    let mut s = String::with_capacity(len.min(64) as usize);
-    for i in 0..len {
-        let b = sdk.read::<u8>(data_addr + i);
-        if b == 0 || !(32..=126).contains(&b) { break; }
-        s.push(b as char);
-    }
-    s
+    // One bulk read instead of up to `len` individual 1-byte syscalls.
+    let bytes = sdk.vm_read_bulk(data_addr, len.min(256) as usize);
+    bytes.iter().take_while(|&&b| b != 0 && (32..=126).contains(&b))
+        .map(|&b| b as char).collect()
 }
 
-/// Read a `Vec3 f32` at `primitive_ptr + Primitive::Position` (current
-/// offset = 0x134 per the table in `offsets.rs`).
+/// Read a `Vec3 f32` at `primitive_ptr + Primitive::Position` in a single
+/// `vm_read_overwrite` syscall (was 3 separate ones). This is the single
+/// hottest read in the whole SDK — called for every part of every player,
+/// every tick, in ESP, aimbot targeting, and cache building — so cutting it
+/// 3x cuts overall SDK syscall volume by a wide margin.
 pub fn read_pos_fast(sdk: &SdkI, primitive: u64) -> [f32; 3] {
     let off = offsets::Primitive::Position as u64;
-    [
-        sdk.read::<f32>(primitive + off),
-        sdk.read::<f32>(primitive + off + 4),
-        sdk.read::<f32>(primitive + off + 8),
-    ]
+    sdk.read::<[f32; 3]>(primitive + off)
 }
 
 // ─── Cache build ───────────────────────────────────────────────────────
@@ -572,6 +562,8 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
         loop {
             let mut empty = true;
             let state = app_handle.state::<AppState>();
+            state.diag_cache_ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            state.diag_cache_known_containers.store(known_containers.len(), std::sync::atomic::Ordering::Relaxed);
 
             // "Reset ESP" requested: forget remembered containers and the live
             // cache, then fall through to a full cold-start walk this tick.
@@ -606,6 +598,7 @@ pub fn start_char_cache_thread(app_handle: AppHandle) {
                     // newly-added containers are still discovered.
                     let refresh_due = last_full_walk.elapsed() >= Duration::from_secs(4);
                     if caches.is_empty() || refresh_due {
+                        state.diag_cache_full_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let (full, containers, local_parent, local_humanoid) = discover_characters(&sdk, workspace, &local_name, &player_names);
                         last_full_walk = Instant::now();
                         if local_parent != 0 {
@@ -693,11 +686,117 @@ fn apply_noclip(sdk: &SdkI, humanoid: u64) {
     }
 }
 
+/// Resolve the local character's HumanoidRootPart Primitive pointer
+/// (humanoid's parent is the character; the HRP is its child).
+fn local_hrp_primitive(sdk: &SdkI, humanoid: u64) -> Option<u64> {
+    let character = sdk.read::<u64>(humanoid + Instance::Parent as u64);
+    if !sdk.is_valid_ptr(character) { return None; }
+    let hrp = find_child_fast(sdk, character, obfstr!("HumanoidRootPart").as_ref());
+    if !sdk.is_valid_ptr(hrp) { return None; }
+    let prim = sdk.read::<u64>(hrp + offsets::BasePart::Primitive as u64);
+    if sdk.is_valid_ptr(prim) { Some(prim) } else { None }
+}
+
+/// Compute the ground point under the cursor: camera ray ∩ the horizontal
+/// plane at the character's current height. Returns the world target, or
+/// `None` when there's no camera / the cursor points above the horizon / a
+/// read was invalid.
+fn resolve_click_target(sdk: &SdkI, state: &AppState, humanoid: u64) -> Option<[f32; 3]> {
+    let prim = local_hrp_primitive(sdk, humanoid)?;
+    let cur = sdk.read::<[f32; 3]>(prim + offsets::Primitive::Position as u64);
+    if !cur[0].is_finite() || !cur[1].is_finite() || !cur[2].is_finite() { return None; }
+
+    let camera = security::resolve_camera(sdk)?;
+    let cmo = offsets::Camera::CameraOrientation as u64;
+    let raw = sdk.read::<crate::esp::CFrameRaw>(camera + cmo);
+    let cam_pos = raw.pos;
+    let m = raw.m;
+    // Columns of the CFrame 3×3 are Right / Up / Back (see `aim_camera`).
+    let right = [m[0][0], m[1][0], m[2][0]];
+    let up = [m[0][1], m[1][1], m[2][1]];
+    let forward = [-m[0][2], -m[1][2], -m[2][2]];
+
+    let bounds = state.roblox_bounds.lock().unwrap().clone();
+    let (win_x, win_y, win_w, win_h) = bounds.unwrap_or((0.0, 0.0, 1920.0, 1080.0));
+    let render_h = (win_h - crate::overlay::TITLEBAR_HEIGHT as f64).max(1.0);
+    let aspect = (win_w / render_h) as f32;
+
+    let cur_pt = crate::aimbot::current_cursor()?;
+    // Cursor (global points) → NDC in [-1, +1].
+    let nx = ((cur_pt.x - win_x) / win_w * 2.0 - 1.0) as f32;
+    let ny = (1.0 - (cur_pt.y - win_y - crate::overlay::TITLEBAR_HEIGHT as f64) / render_h * 2.0) as f32;
+
+    let zoom = sdk.read::<f32>(camera + offsets::Camera::Fov as u64 + 8);
+    let fov_rad = crate::math::fov_from_zoom(zoom).to_radians();
+    let tan_y = (fov_rad / 2.0).tan();
+    let tan_x = aspect * tan_y;
+
+    // Ray direction through the cursor, in world space.
+    let mut dir = [
+        forward[0] + nx * tan_x * right[0] + ny * tan_y * up[0],
+        forward[1] + nx * tan_x * right[1] + ny * tan_y * up[1],
+        forward[2] + nx * tan_x * right[2] + ny * tan_y * up[2],
+    ];
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    if !len.is_finite() || len < 1e-4 { return None; }
+    dir = [dir[0] / len, dir[1] / len, dir[2] / len];
+
+    // Intersect with the horizontal plane at the character's current height.
+    let plane_y = cur[1];
+    if dir[1].abs() < 1e-4 { return None; } // ray parallel to the ground
+    let t = (plane_y - cam_pos[1]) / dir[1];
+    if !t.is_finite() || t <= 0.0 { return None; } // point is behind / above the horizon
+
+    let hit = [cam_pos[0] + dir[0] * t, plane_y, cam_pos[2] + dir[2] * t];
+    if !hit[0].is_finite() || !hit[2].is_finite() { return None; }
+    Some(hit)
+}
+
+/// Teleport the whole character to `target` by shifting every body part by the
+/// same delta (target − current HRP position). Moving the entire assembly (not
+/// just the HRP) keeps it rigid, so the physics solver has nothing to snap back
+/// to. Self-correcting: called every tick during the hold window, so if
+/// physics/replication drags the character part-way home the delta grows again
+/// and we re-assert. Returns false if the character couldn't be resolved.
+fn teleport_assembly(sdk: &SdkI, humanoid: u64, target: [f32; 3]) -> bool {
+    let character = sdk.read::<u64>(humanoid + Instance::Parent as u64);
+    if !sdk.is_valid_ptr(character) { return false; }
+    let hrp_prim = match local_hrp_primitive(sdk, humanoid) { Some(p) => p, None => return false };
+
+    let pos_off = offsets::Primitive::Position as u64;
+    let cur = sdk.read::<[f32; 3]>(hrp_prim + pos_off);
+    if !cur[0].is_finite() || !cur[1].is_finite() || !cur[2].is_finite() { return false; }
+
+    let delta = [target[0] - cur[0], target[1] - cur[1], target[2] - cur[2]];
+    // Already at the target (within 0.05 studs) — nothing to do.
+    if delta[0].abs() < 0.05 && delta[1].abs() < 0.05 && delta[2].abs() < 0.05 { return true; }
+
+    for child in get_children(sdk, character) {
+        let prim = sdk.read::<u64>(child + offsets::BasePart::Primitive as u64);
+        if !sdk.is_valid_ptr(prim) { continue; }
+        // Sanity-gate on Size so we only shift genuine parts (skip Humanoid, scripts…).
+        let sx = sdk.read::<f32>(prim + offsets::Primitive::Size as u64);
+        if !sx.is_finite() || sx <= 0.0 || sx > 1000.0 { continue; }
+        let p = sdk.read::<[f32; 3]>(prim + pos_off);
+        if !p[0].is_finite() || !p[1].is_finite() || !p[2].is_finite() { continue; }
+        sdk.write::<[f32; 3]>(prim + pos_off, [p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]]);
+    }
+    true
+}
+
 pub fn start_misc_thread(app_handle: AppHandle) {
     let mut last_tick = Instant::now();
     // Extra HipHeight accumulated while the fly bind is held — climbs while
     // held, resets to 0 (back to `cfg.hip_height`) once released.
     let mut fly_offset: f32 = 0.0;
+    // Previous click-TP key state, so we teleport once per press (rising edge)
+    // instead of every tick the key is held.
+    let mut tp_key_prev = false;
+    // Active teleport: target world position + the instant to hold it until.
+    // A single write gets overwritten by Roblox physics on the next frame and
+    // the character snaps back, so we re-assert the target for a short window.
+    let mut tp_target: Option<[f32; 3]> = None;
+    let mut tp_hold_until = Instant::now();
     thread::spawn(move || loop {
         let dt = last_tick.elapsed().as_secs_f32();
         last_tick = Instant::now();
@@ -710,6 +809,9 @@ pub fn start_misc_thread(app_handle: AppHandle) {
                 let cfg = state.misc_cfg.lock().unwrap().clone();
                 if cfg.jump_power_enabled {
                     sdk.write::<f32>(humanoid + offsets::Humanoid::JumpPower as u64, cfg.jump_power);
+                }
+                if cfg.walk_speed_enabled {
+                    sdk.write::<f32>(humanoid + offsets::Humanoid::WalkSpeed as u64, cfg.walk_speed);
                 }
                 if cfg.display_distance_enabled {
                     sdk.write::<f32>(humanoid + offsets::Humanoid::DisplayDistance as u64, cfg.display_distance);
@@ -728,8 +830,37 @@ pub fn start_misc_thread(app_handle: AppHandle) {
                 if cfg.noclip_enabled {
                     apply_noclip(&sdk, humanoid);
                 }
+
+                // Click teleport — on the key's rising edge, resolve the ground
+                // point under the cursor and hold the character there for a
+                // short window so physics/replication can't pull it back.
+                if cfg.tp_click_enabled && !cfg.tp_click_keybind.is_empty() {
+                    let down = crate::input::is_held(&cfg.tp_click_keybind);
+                    if down && !tp_key_prev {
+                        if let Some(target) = resolve_click_target(&sdk, state.inner(), humanoid) {
+                            tp_target = Some(target);
+                            tp_hold_until = Instant::now() + Duration::from_millis(500);
+                        }
+                    }
+                    tp_key_prev = down;
+                } else {
+                    tp_key_prev = false;
+                    tp_target = None;
+                }
+
+                // Re-assert the teleport target every tick until the hold expires.
+                if let Some(target) = tp_target {
+                    if Instant::now() < tp_hold_until {
+                        teleport_assembly(&sdk, humanoid, target);
+                    } else {
+                        tp_target = None;
+                    }
+                }
             }
         }
-        thread::sleep(Duration::from_millis(16));
+        // Tick fast while a teleport is being held so we re-assert the position
+        // on every physics frame; idle at 16 ms otherwise.
+        let sleep_ms = if tp_target.is_some() { 3 } else { 16 };
+        thread::sleep(Duration::from_millis(sleep_ms));
     });
 }

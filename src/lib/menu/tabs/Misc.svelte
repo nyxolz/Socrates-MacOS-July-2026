@@ -16,6 +16,10 @@
         <Slider label="Jump Power value" bind:value={$misc.jump_power}
             min={0} max={1000} step={10} />
 
+        <Toggle bind:checked={$misc.walk_speed_enabled} label="Walk Speed" />
+        <Slider label="Walk Speed value" bind:value={$misc.walk_speed}
+            min={0} max={500} step={1} />
+
         <div class="row">
             <Toggle bind:checked={$misc.fly_enabled} label="Fly" />
             <KeybindInput inline bind:value={$misc.fly_keybind} />
@@ -24,6 +28,14 @@
             min={1} max={50} step={1} format={(v) => v.toFixed(0) + " /s"} />
 
         <Toggle bind:checked={$misc.noclip_enabled} label="No Clip" />
+    </Section>
+
+    <Section title="Teleport" icon="compass">
+        <div class="row">
+            <Toggle bind:checked={$misc.tp_click_enabled} label="TP Click" />
+            <KeybindInput inline bind:value={$misc.tp_click_keybind} />
+        </div>
+        <div class="hint">Press the bind to teleport where the cursor points on the map.</div>
     </Section>
 </div>
 
@@ -34,4 +46,5 @@
     }
     .row { display: flex; align-items: center; gap: 8px; }
     .row :global(.toggle) { flex: 1; }
+    .hint { font-size: 10px; color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
 </style>

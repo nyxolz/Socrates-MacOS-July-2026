@@ -150,7 +150,7 @@
 
     function strokeBox2D(ctx: CanvasRenderingContext2D, box: [number, number, number, number],
                          color: string, thickness: number, outline: boolean,
-                         fill: boolean, fillColor: string) {
+                         fill: boolean, fillColor: string, corner: boolean) {
         const a = ndcToScreen(box[0], box[3]);
         const b = ndcToScreen(box[2], box[1]);
         const x = a.x, y = a.y, w = b.x - a.x, h = b.y - a.y;
@@ -158,14 +158,36 @@
             ctx.fillStyle = hexToRgba(fillColor, 0.25);
             ctx.fillRect(x, y, w, h);
         }
+        const strokeCorners = () => {
+            const lx = Math.min(Math.abs(w), Math.abs(h)) * 0.25;
+            ctx.beginPath();
+            // top-left / top-right / bottom-left / bottom-right L-shapes
+            ctx.moveTo(x, y + lx); ctx.lineTo(x, y); ctx.lineTo(x + lx, y);
+            ctx.moveTo(x + w - lx, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + lx);
+            ctx.moveTo(x, y + h - lx); ctx.lineTo(x, y + h); ctx.lineTo(x + lx, y + h);
+            ctx.moveTo(x + w - lx, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - lx);
+            ctx.stroke();
+        };
         if (outline) {
             ctx.lineWidth = thickness + 1.5;
             ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
-            ctx.strokeRect(x, y, w, h);
+            if (corner) strokeCorners(); else ctx.strokeRect(x, y, w, h);
         }
         ctx.lineWidth = thickness;
         ctx.strokeStyle = color;
-        ctx.strokeRect(x, y, w, h);
+        if (corner) strokeCorners(); else ctx.strokeRect(x, y, w, h);
+    }
+
+    // Corner-style variant of a segment list: keep only a stub at each end
+    // of every edge, so the 3-D box shows its corners without full edges.
+    function cornerSegments(segs: [number, number, number, number][]): [number, number, number, number][] {
+        const out: [number, number, number, number][] = [];
+        const t = 0.28;
+        for (const [x1, y1, x2, y2] of segs) {
+            out.push([x1, y1, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t]);
+            out.push([x2, y2, x2 + (x1 - x2) * t, y2 + (y1 - y2) * t]);
+        }
+        return out;
     }
 
 
@@ -503,7 +525,8 @@
                     drawPartBoxes(ctx, p.part_boxes, cfg.part_esp, cfg.part_esp_color, cfg.part_esp_opacity, cfg.part_esp_border, cfg.part_esp_border_color);
                 }
                 if (cfg.box3d && p.box3d.length) {
-                    strokeSegments(ctx, p.box3d, cfg.box3d_color, cfg.box3d_thickness, outline);
+                    const segs = cfg.box3d_style === "Corner" ? cornerSegments(p.box3d) : p.box3d;
+                    strokeSegments(ctx, segs, cfg.box3d_color, cfg.box3d_thickness, outline);
                     // Note: true 3-D fill would need per-face polygons —
                     // skipped for now, only the wireframe draws.
                 }
@@ -515,7 +538,7 @@
                 }
                 if (cfg.box2d && p.box2d) {
                     strokeBox2D(ctx, p.box2d, cfg.box2d_color, cfg.box2d_thickness, outline,
-                        cfg.box2d_fill, cfg.box2d_fill_color);
+                        cfg.box2d_fill, cfg.box2d_fill_color, cfg.box2d_style === "Corner");
                 }
                 if (cfg.health_bar && p.box2d) {
                     drawHealthBar(ctx, p.box2d, p.health, cfg.health_bar_color, outline);
@@ -564,16 +587,13 @@
                 }
             }
 
-            // FOV circle on top of player overlays
+            // FOV circle on top of player overlays. All aim types (Mouse
+            // included) now reference the crosshair at screen centre, so the
+            // FOV is drawn there too.
             if (acfg?.show_fov) {
-                let cx: number, cy: number;
-                if (acfg.aim_type === "Mouse" && lastFrame.cursor) {
-                    cx = lastFrame.cursor[0]; cy = lastFrame.cursor[1];
-                } else {
-                    const renderH = window.innerHeight - TITLEBAR_HEIGHT;
-                    cx = window.innerWidth / 2;
-                    cy = TITLEBAR_HEIGHT + renderH / 2;
-                }
+                const renderH = window.innerHeight - TITLEBAR_HEIGHT;
+                const cx = window.innerWidth / 2;
+                const cy = TITLEBAR_HEIGHT + renderH / 2;
                 drawFovCircle(ctx, cx, cy, acfg.fov_radius, acfg.fill_fov, acfg.fov_color, acfg.fov_fill_color);
             }
 

@@ -47,12 +47,20 @@
 
         <Section title="Prediction" icon="zap" active={$aimbot.prediction_enabled}>
             <Toggle bind:checked={$aimbot.prediction_enabled} label="Enabled" />
-            <Slider label="Strength" bind:value={$aimbot.prediction_strength}
-                min={0} max={2} step={0.01} format={(v) => v.toFixed(2) + "x"} />
-            <Toggle bind:checked={$aimbot.velocity_prediction} label="Velocity-based" />
-            <Toggle bind:checked={$aimbot.bullet_drop_comp} label="Bullet drop" />
-            <Slider label="Gravity comp" bind:value={$aimbot.gravity_comp}
-                min={0} max={200} step={1} />
+            {#if $aimbot.prediction_enabled}
+                <Slider label="Projectile speed" bind:value={$aimbot.projectile_speed}
+                    min={20} max={2000} step={10} format={(v) => v.toFixed(0) + " st/s"} />
+                <Slider label="Strength (horizontal)" bind:value={$aimbot.prediction_strength}
+                    min={0} max={2} step={0.01} format={(v) => v.toFixed(2) + "x"} />
+                <Slider label="Strength (vertical Y)" bind:value={$aimbot.prediction_y}
+                    min={0} max={2} step={0.01} format={(v) => v.toFixed(2) + "x"} />
+                <Toggle bind:checked={$aimbot.velocity_prediction} label="Lead moving targets" />
+                <Toggle bind:checked={$aimbot.bullet_drop_comp} label="Bullet drop compensation" />
+                {#if $aimbot.bullet_drop_comp}
+                    <Slider label="Gravity" bind:value={$aimbot.gravity_comp}
+                        min={0} max={500} step={0.1} format={(v) => v.toFixed(1)} />
+                {/if}
+            {/if}
         </Section>
 
     </div>
@@ -68,14 +76,31 @@
                 min={50} max={2000} step={10} format={(v) => v.toFixed(0) + " s"} />
         </Section>
 
+        <Section title="Trigger bot" icon="zap" active={$aimbot.trigger_enabled}>
+            <div class="row">
+                <Toggle bind:checked={$aimbot.trigger_enabled} label="Enabled" />
+                <KeybindInput inline bind:value={$aimbot.trigger_keybind} />
+            </div>
+            <Toggle bind:checked={$aimbot.trigger_aim} label="Auto-aim (in FOV)" />
+            <Slider label="Delay" bind:value={$aimbot.trigger_delay}
+                min={0} max={500} step={5} format={(v) => v.toFixed(0) + " ms"} />
+            <Toggle bind:checked={$aimbot.trigger_burst} label="Burst (2 shots)" />
+        </Section>
+
         <Section title="Legit" icon="shield" active={$aimbot.legit_enabled}>
             <Toggle bind:checked={$aimbot.legit_enabled} label="Legit mode" />
-            <Slider label="Reaction time" bind:value={$aimbot.reaction_time}
-                min={0} max={500} step={5} format={(v) => v.toFixed(0) + " ms"} />
-            <Toggle bind:checked={$aimbot.humanize} label="Humanize aim" />
-            <Slider label="Humanize strength" bind:value={$aimbot.humanize_strength}
-                min={0} max={10} step={0.1} format={(v) => v.toFixed(1) + " px"} />
-            <Toggle bind:checked={$aimbot.smooth_path} label="Smooth path" />
+            {#if $aimbot.legit_enabled}
+                <Slider label="Reaction time" bind:value={$aimbot.reaction_time}
+                    min={0} max={500} step={5} format={(v) => v.toFixed(0) + " ms"} />
+                <Slider label="Miss chance" bind:value={$aimbot.legit_miss}
+                    min={0} max={1} step={0.01} format={(v) => (v * 100).toFixed(0) + "%"} />
+                <Toggle bind:checked={$aimbot.humanize} label="Humanize aim" />
+                {#if $aimbot.humanize}
+                    <Slider label="Humanize strength" bind:value={$aimbot.humanize_strength}
+                        min={0} max={10} step={0.1} format={(v) => v.toFixed(1) + " px"} />
+                {/if}
+                <Toggle bind:checked={$aimbot.smooth_path} label="Smooth path" />
+            {/if}
         </Section>
 
     </div>

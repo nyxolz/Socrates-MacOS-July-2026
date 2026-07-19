@@ -1,26 +1,24 @@
 <script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
     import { openUrl } from "@tauri-apps/plugin-opener";
-    import { WORKINK_URL, saveKey } from "./stores";
+    import { saveKey } from "./stores";
 
-    type KeyResult = { valid: boolean; expires_after: number; network_error: boolean };
+    type KeyResult = {
+        valid: boolean;
+        expires_after: number;
+        network_error: boolean;
+        version_blocked: boolean;
+        latest_version: string;
+    };
+
+    const BUY_LIFETIME_URL = "https://cherrylovers.mykomerza.com/product?id=socrate-lifetime";
 
     let token = "";
     let busy = false;
     let error = "";
-    let copied = false;
 
-    async function getKey() {
-        try { await openUrl(WORKINK_URL); }
-        catch { /* opener unavailable — ignore */ }
-    }
-
-    async function copyLink() {
-        try {
-            await navigator.clipboard.writeText(WORKINK_URL);
-            copied = true;
-            setTimeout(() => { copied = false; }, 1500);
-        } catch { /* clipboard unavailable — ignore */ }
+    function buyLifetime() {
+        void openUrl(BUY_LIFETIME_URL);
     }
 
     async function activate() {
@@ -29,9 +27,12 @@
         if (!t) { error = "Enter your key."; return; }
         busy = true;
         try {
-            const res = await invoke<KeyResult>("validate_workink_key", { token: t });
+            const res = await invoke<KeyResult>("validate_keyauth_key", { token: t });
             if (res.network_error) {
-                error = "Couldn't reach work.ink — try again.";
+                error = "Couldn't reach the key server — try again.";
+            } else if (res.version_blocked) {
+                // Disabled build — the backend shows the message and quits.
+                await invoke("report_version_blocked", { latest: res.latest_version });
             } else if (!res.valid) {
                 error = "Invalid or already-used key.";
             } else {
@@ -52,7 +53,7 @@
 <div class="keypanel">
     <div class="card">
         <div class="title">Activate Socrate</div>
-        <div class="sub">Complete the steps to get your key, then paste it below.</div>
+        <div class="sub">Paste your KeyAuth license key below to activate.</div>
 
         <input
             class="field"
@@ -69,10 +70,12 @@
         <button class="btn primary" on:click={activate} disabled={busy}>
             {busy ? "Checking…" : "Activate"}
         </button>
-        <div class="btn-row">
-            <button class="btn ghost" on:click={getKey}>Get a key</button>
-            <button class="btn ghost" on:click={copyLink}>{copied ? "Copied!" : "Copy link"}</button>
-        </div>
+
+        <div class="or">or</div>
+        <button class="btn lifetime" on:click={buyLifetime}>
+            <span class="lt-main">Buy lifetime</span>
+            <span class="lt-price">$5.00</span>
+        </button>
     </div>
 </div>
 
@@ -133,15 +136,39 @@
     }
     .btn.primary:hover { opacity: 0.9; }
     .btn.primary:disabled { opacity: 0.5; cursor: default; }
-    .btn-row {
-        display: flex;
-        gap: 6px;
-    }
-    .btn-row .btn { flex: 1; }
-    .btn.ghost {
-        background: transparent;
-        border-color: var(--border);
+    .or {
+        text-align: center;
+        font-size: 10px;
         color: var(--text-muted);
+        margin: 4px 0 0 0;
+        text-transform: uppercase;
+        letter-spacing: 1px;
     }
-    .btn.ghost:hover { color: var(--text); background: var(--bg-tab-hover); }
+    .btn.lifetime {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: #fff;
+        font-weight: 700;
+        border: 0;
+        background: linear-gradient(135deg, #ffae3d, #ff7a1f, #ff4a2a, #ff3d6e, #d81b60);
+        background-size: 200% 200%;
+        background-position: 0% 0%;
+        box-shadow: 0 0 14px rgba(255, 122, 31, 0.40);
+        transition: background-position 360ms var(--ease), box-shadow 220ms var(--ease), transform 120ms var(--ease);
+    }
+    .btn.lifetime:hover {
+        background-position: 100% 100%;
+        box-shadow: 0 0 22px rgba(255, 61, 110, 0.55);
+        transform: translateY(-1px);
+    }
+    .lt-main { font-size: 12px; }
+    .lt-price {
+        font-variant-numeric: tabular-nums;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.25);
+    }
 </style>

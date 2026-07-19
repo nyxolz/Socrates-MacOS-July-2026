@@ -255,6 +255,10 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
     thread::spawn(move || {
         // Per-character last (pos, time) for velocity prediction.
         let mut prev: HashMap<u64, ([f32; 3], Instant)> = HashMap::new();
+        // Per-character EMA-smoothed world velocity (studs/s). Raw 2-sample
+        // velocity is far too noisy at ~1 kHz; the EMA averages it into a stable
+        // lead so prediction doesn't jitter the aim around the target.
+        let mut vel: HashMap<u64, [f32; 3]> = HashMap::new();
         let mut last_shot = Instant::now() - Duration::from_secs(10);
         // Last tick time, for framerate-independent (time-based) smoothing.
         let mut last_aim_t = Instant::now();
@@ -332,9 +336,14 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
 
             // Reaction-time gate: on a fresh key press, wait `reaction_time` ms
             // before the aim actually engages (human reflex). Released key resets.
+            // Only applies under Legit mode — otherwise the aim engages instantly.
             let react_ready = if aim_on {
                 let started = *aim_press_started.get_or_insert_with(Instant::now);
-                started.elapsed().as_millis() as f32 >= cfg.reaction_time
+                if !cfg.legit_enabled {
+                    true
+                } else {
+                    started.elapsed().as_millis() as f32 >= cfg.reaction_time
+                }
             } else {
                 aim_press_started = None;
                 false
@@ -347,24 +356,15 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             if !aim_on && !trig_on { continue; }
 
             let camera = match resolve_camera(&sdk) { Some(c) => c, None => continue };
-            let cpo = offsets::Camera::CameraPosition as u64;
+            // Single-syscall CFrame read (see `esp::CFrameRaw`) — avoids torn
+            // reads from the old 12-separate-read version that raced against
+            // Roblox's render thread rewriting the camera every frame. Only
+            // changes how camera bytes are read; no offset or DataModel
+            // logic involved.
             let cmo = offsets::Camera::CameraOrientation as u64;
-            let cam_pos = [
-                sdk.read::<f32>(camera + cpo),
-                sdk.read::<f32>(camera + cpo + 4),
-                sdk.read::<f32>(camera + cpo + 8),
-            ];
-            let m = [
-                [sdk.read::<f32>(camera + cmo),
-                    sdk.read::<f32>(camera + cmo + 4),
-                    sdk.read::<f32>(camera + cmo + 8)],
-                [sdk.read::<f32>(camera + cmo + 12),
-                    sdk.read::<f32>(camera + cmo + 16),
-                    sdk.read::<f32>(camera + cmo + 20)],
-                [sdk.read::<f32>(camera + cmo + 24),
-                    sdk.read::<f32>(camera + cmo + 28),
-                    sdk.read::<f32>(camera + cmo + 32)],
-            ];
+            let raw = sdk.read::<crate::esp::CFrameRaw>(camera + cmo);
+            let cam_pos = raw.pos;
+            let m = raw.m;
 
             let bounds = state.roblox_bounds.lock().unwrap().clone();
             let (win_x, win_y, win_w, win_h) =
@@ -382,17 +382,12 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
             let local_parent = state.local_parent.load(std::sync::atomic::Ordering::Relaxed);
             let cx_center = win_x + win_w * 0.5;
             let cy_center = win_y + TITLEBAR_HEIGHT as f64 + render_h * 0.5;
-            // In Mouse mode the user aims by moving the cursor — the FOV
-            // circle + "closest" selection should both be measured from the
-            // current cursor, not the geometric screen centre. In Camera
-            // mode the centre is the only meaningful reference.
-            let (ref_x, ref_y) = if cfg.aim_type == "Camera" || is_silent_aim {
-                (cx_center, cy_center)
-            } else {
-                current_cursor()
-                    .map(|c| (c.x, c.y))
-                    .unwrap_or((cx_center, cy_center))
-            };
+            // Every aim type references the crosshair (screen centre). Mouse mode
+            // rotates the camera until the target sits there. Crucially it does
+            // NOT reference the live cursor: our own camera-delta events drift
+            // the cursor, so a cursor reference chases itself and swings the view
+            // instead of locking — using a fixed centre makes it converge.
+            let (ref_x, ref_y) = (cx_center, cy_center);
             let now = Instant::now();
             // Real elapsed time since the previous tick — drives time-based
             // smoothing so the aim speed doesn't depend on the (uncapped) loop
@@ -432,21 +427,43 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                 if dist < 0.5 { continue; }
                 if dist < cfg.min_distance || dist > cfg.max_distance { continue; }
 
-                // Prediction
+                // ── Prediction ──────────────────────────────────────────
+                // Travel time to the target = distance / projectile speed. It
+                // drives both the velocity lead and the bullet-drop rise, so a
+                // faster projectile leads/drops less — physically consistent.
                 let mut tp = pos;
                 if cfg.prediction_enabled {
+                    let speed = cfg.projectile_speed.max(1.0);
+                    let travel = dist / speed; // seconds
+
                     if cfg.velocity_prediction {
+                        // Update the EMA velocity from this tick's raw sample.
                         if let Some((pp, pt)) = prev.get(&cache.char_addr).copied() {
-                            let dt = (now - pt).as_secs_f32().max(0.001);
-                            // Travel time estimate: dist / projectile_speed (300 studs/s default).
-                            let k = cfg.prediction_strength * (dist / 300.0);
-                            tp[0] += (pos[0] - pp[0]) / dt * k;
-                            tp[1] += (pos[1] - pp[1]) / dt * k;
-                            tp[2] += (pos[2] - pp[2]) / dt * k;
+                            let sdt = (now - pt).as_secs_f32().clamp(0.0005, 0.1);
+                            let inst = [
+                                (pos[0] - pp[0]) / sdt,
+                                (pos[1] - pp[1]) / sdt,
+                                (pos[2] - pp[2]) / sdt,
+                            ];
+                            let v = vel.entry(cache.char_addr).or_insert([0.0; 3]);
+                            // Blend factor: heavier smoothing = steadier lead.
+                            const A: f32 = 0.25;
+                            for i in 0..3 {
+                                v[i] = v[i] * (1.0 - A) + inst[i] * A;
+                            }
+                        }
+                        if let Some(v) = vel.get(&cache.char_addr) {
+                            // Horizontal (X/Z) and vertical (Y) leads are scaled
+                            // independently so jumping targets can be tuned apart.
+                            let kh = cfg.prediction_strength * travel;
+                            let kv = cfg.prediction_y * travel;
+                            tp[0] += v[0] * kh;
+                            tp[1] += v[1] * kv;
+                            tp[2] += v[2] * kh;
                         }
                     }
                     if cfg.bullet_drop_comp {
-                        let travel = dist / 300.0;
+                        // Aim up to counter the projectile's fall over the flight.
                         tp[1] += 0.5 * cfg.gravity_comp * travel * travel;
                     }
                 }
@@ -501,12 +518,20 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                 }
             };
 
+            // Trigger auto-aim: when the trigger bot is active with `trigger_aim`
+            // on, it drives the aimbot onto the closest FOV target (no reaction
+            // gate, no sticky lock — it snaps to whoever is in the FOV) using
+            // the same aim method. The regular aim key still takes priority.
+            let trig_aim = trig_on && cfg.trigger_aim;
+            let aim_engaged = aim_on && react_ready;
+            let aim_target = if aim_engaged { chosen } else if trig_aim { best } else { None };
+
             // Aim — Mouse warps the OS cursor; Camera writes the orientation
             // matrix directly so the in-game camera snaps onto the target
             // without ever touching `CameraType` (which would lock the
             // character controller and freeze player movement).
-            if aim_on && react_ready {
-                if let Some((_, sx, sy, scr_d, tp, _)) = chosen {
+            if aim_engaged || trig_aim {
+                if let Some((_, sx, sy, scr_d, tp, _)) = aim_target {
                     // Legit miss only makes sense for the *visible* aim modes
                     // (Camera/Mouse) — it's there to make the snap look human.
                     // Silent Aim is already undetectable, so applying it here
@@ -565,28 +590,23 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                                 }
                             }
                             _ => {
-                                // Mode Mouse : on ne téléporte plus le curseur (ça ne
-                                // fait pas tourner la caméra sur macOS). On envoie un
-                                // mouvement RELATIF vers la cible — la caméra suit comme
-                                // sous Windows. Le delta = (cible - curseur) lissé.
+                                // Mode Mouse : on déplace directement le CURSEUR OS sur
+                                // la cible via l'API macOS (CGWarpMouseCursorPosition,
+                                // dans `move_mouse_to`). Pour un jeu où l'on vise au
+                                // curseur, ça pose le réticule à 100% sur le joueur, sans
+                                // dérive possible (position absolue, pas de delta relatif).
                                 if let Some(cur) = current_cursor() {
-                                    let raw_dx = sx - cur.x;
-                                    let raw_dy = sy - cur.y;
-                                    let mut step = alpha as f64;
-                                    // smooth_path: ease-out — decelerate as the
-                                    // cursor closes the last ~80 px on the target
-                                    // so the lock settles instead of snapping.
-                                    if cfg.smooth_path {
-                                        let d = (raw_dx * raw_dx + raw_dy * raw_dy).sqrt();
+                                    // Sans Legit : snap direct (step 1 = curseur pile sur
+                                    // la cible). Avec Legit : lerp lissé + ease + humanize.
+                                    let mut step = if cfg.legit_enabled { alpha as f64 } else { 1.0 };
+                                    if cfg.legit_enabled && cfg.smooth_path {
+                                        let d = ((sx - cur.x).powi(2) + (sy - cur.y).powi(2)).sqrt();
                                         let ease = smoothstep((d / 80.0) as f32) as f64;
                                         step *= 0.25 + 0.75 * ease;
                                     }
-                                    let mut dx = raw_dx * step;
-                                    let mut dy = raw_dy * step;
-                                    if cfg.humanize {
-                                        // Advance the low-pass jitter toward a fresh
-                                        // random goal once it has nearly arrived —
-                                        // smooth organic wander, not per-tick noise.
+                                    let mut tx = cur.x + (sx - cur.x) * step;
+                                    let mut ty = cur.y + (sy - cur.y) * step;
+                                    if cfg.legit_enabled && cfg.humanize {
                                         let amp = cfg.humanize_strength;
                                         if (jitter[0] - jitter_goal[0]).abs() < 0.1
                                             && (jitter[1] - jitter_goal[1]).abs() < 0.1
@@ -598,21 +618,22 @@ pub fn start_aimbot_thread(app_handle: AppHandle) {
                                         }
                                         jitter[0] += (jitter_goal[0] - jitter[0]) * 0.15;
                                         jitter[1] += (jitter_goal[1] - jitter[1]) * 0.15;
-                                        dx += jitter[0] as f64;
-                                        dy += jitter[1] as f64;
+                                        tx += jitter[0] as f64;
+                                        ty += jitter[1] as f64;
                                     }
-                                    // Per-tick speed cap (px) — bounds how fast the
-                                    // cursor can travel so flicks look human.
+                                    // Per-tick travel cap (px) so the warp can't teleport
+                                    // the cursor across the screen in one jump (Legit feel).
                                     if cfg.max_speed > 0.0 {
+                                        let dx = tx - cur.x;
+                                        let dy = ty - cur.y;
                                         let sp = (dx * dx + dy * dy).sqrt();
                                         let cap = cfg.max_speed as f64;
                                         if sp > cap {
-                                            dx = dx / sp * cap;
-                                            dy = dy / sp * cap;
+                                            tx = cur.x + dx / sp * cap;
+                                            ty = cur.y + dy / sp * cap;
                                         }
                                     }
-                                    let pressed = cfg.keybind == "MouseLeft" && is_held("MouseLeft");
-                                    move_camera_delta(dx, dy, pressed);
+                                    move_mouse_to(tx, ty);
                                 }
                             }
                         }

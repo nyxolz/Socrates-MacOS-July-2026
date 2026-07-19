@@ -105,6 +105,43 @@ pub fn sdk_status(state: State<AppState>) -> Option<(String, u64, u64)> {
     Some((format!("0x{:X}", sdk.base), ok, fail))
 }
 
+/// Raw diagnostic counters for the Dev tab's flicker-hunting panel. The
+/// frontend polls this every second and computes rates client-side by
+/// diffing against the previous snapshot — every field here is a
+/// monotonically-increasing counter, never reset.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct DiagStats {
+    pub esp_ticks: u64,
+    pub esp_players_culled: u64,
+    pub esp_camera_jumps: u64,
+    pub cache_ticks: u64,
+    pub cache_full_walks: u64,
+    pub cache_known_containers: usize,
+    pub char_caches_len: usize,
+    pub read_ok: u64,
+    pub read_fail: u64,
+}
+
+#[tauri::command]
+pub fn get_diag_stats(state: State<AppState>) -> DiagStats {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (read_ok, read_fail) = state.sdk.lock().unwrap().clone()
+        .map(|sdk| sdk.read_stats())
+        .unwrap_or((0, 0));
+    DiagStats {
+        esp_ticks: state.diag_esp_ticks.load(Relaxed),
+        esp_players_culled: state.diag_esp_players_culled.load(Relaxed),
+        esp_camera_jumps: state.diag_esp_camera_jumps.load(Relaxed),
+        cache_ticks: state.diag_cache_ticks.load(Relaxed),
+        cache_full_walks: state.diag_cache_full_walks.load(Relaxed),
+        cache_known_containers: state.diag_cache_known_containers.load(Relaxed),
+        char_caches_len: state.char_caches.lock().unwrap().len(),
+        read_ok,
+        read_fail,
+    }
+}
+
 #[tauri::command]
 pub fn set_aimbot_config(state: State<AppState>, cfg: AimbotCfg) {
     *state.aimbot_cfg.lock().unwrap() = cfg;
@@ -254,11 +291,7 @@ pub fn list_players(state: State<AppState>) -> Vec<PlayerEntry> {
 fn resolve_cam_pos(sdk: &SdkI) -> Option<[f32; 3]> {
     let cam = security::resolve_camera(sdk)?;
     let off = offsets::Camera::CameraPosition as u64;
-    Some([
-        sdk.read::<f32>(cam + off),
-        sdk.read::<f32>(cam + off + 4),
-        sdk.read::<f32>(cam + off + 8),
-    ])
+    Some(sdk.read::<[f32; 3]>(cam + off))
 }
 
 /// `target` is the hex char_addr from `list_players` or `null` to stop.
@@ -282,12 +315,17 @@ pub fn get_spectate_target(state: State<AppState>) -> Option<String> {
 #[tauri::command]
 pub fn set_player_relation(state: State<AppState>, name: String, relation: u8) {
     if name.is_empty() { return; }
-    let mut relations = state.player_relations.lock().unwrap();
+    // Copy-on-write: build a modified clone of the map, then swap the Arc —
+    // readers (ESP/aimbot hot loops) never block on this and never pay for
+    // a full map clone just to read it.
+    let mut guard = state.player_relations.lock().unwrap();
+    let mut relations = (**guard).clone();
     if relation == 0 {
         relations.remove(&name);
     } else {
         relations.insert(name, relation);
     }
+    *guard = Arc::new(relations);
 }
 
 
@@ -363,6 +401,14 @@ pub fn set_object_esp(state: State<AppState>, enabled: bool) {
 #[tauri::command]
 pub fn set_key_unlocked(state: State<AppState>, unlocked: bool) {
     state.key_unlocked.store(unlocked, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Push (or clear) the active license key so the background license-watch
+/// thread can re-validate it every few seconds. Frontend sends the token on
+/// activation and `None` on logout.
+#[tauri::command]
+pub fn set_license_token(state: State<AppState>, token: Option<String>) {
+    *state.license_token.lock().unwrap() = token.filter(|t| !t.trim().is_empty());
 }
 
 /// List the name of every direct child of the `Players` service. Backs the
@@ -556,7 +602,8 @@ pub fn get_version() -> &'static str {
     crate::version::VERSION
 }
 
-/// Fetch the version currently published at usesocrate.xyz. Returns the
+/// Fetch the version currently published at `STATUS_URL` (main endpoint on
+/// production builds, prov GitHub raw URL on preview builds). Returns the
 /// raw `socrate_version` string; the frontend compares against `get_version`
 /// to decide if an update banner should show.
 #[tauri::command]
@@ -566,7 +613,7 @@ pub async fn check_remote_version() -> Result<String, String> {
         .build()
         .map_err(|e| e.to_string())?;
     let body: serde_json::Value = client
-        .get("https://usesocrate.xyz/status.json")
+        .get(crate::version::STATUS_URL)
         .send().await.map_err(|e| e.to_string())?
         .json().await.map_err(|e| e.to_string())?;
     body["Socrate"]["socrate_version"]

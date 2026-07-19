@@ -7,6 +7,13 @@
     "core:default",
     "clipboard-manager:default",
     "clipboard-manager:allow-write-text",
-    "clipboard-manager:allow-read-text"
+    "clipboard-manager:allow-read-text",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://usesocrate.xyz/*" },
+        { "url": "https://cherrylovers.mykomerza.com/*" }
+      ]
+    }
   ]
 }

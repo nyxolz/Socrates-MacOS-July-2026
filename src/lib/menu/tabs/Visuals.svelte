@@ -7,6 +7,7 @@
     import ColorPicker from "../controls/ColorPicker.svelte";
 
     const ORIGINS = ["Top", "Center", "Bottom"] as const;
+    const BOX_STYLES = ["Full", "Corner"] as const;
 </script>
 
 <div class="grid">
@@ -29,6 +30,7 @@
                 <Toggle bind:checked={$visuals.box2d_fill} label="Fill" />
                 <ColorPicker bind:value={$visuals.box2d_fill_color} />
             </div>
+            <Dropdown label="Style" bind:value={$visuals.box2d_style} options={BOX_STYLES} />
             <Slider label="Thickness" bind:value={$visuals.box2d_thickness}
                 min={0.5} max={5} step={0.1} format={(v) => v.toFixed(1)} />
         </Section>
@@ -42,6 +44,7 @@
                 <Toggle bind:checked={$visuals.box3d_fill} label="Fill" />
                 <ColorPicker bind:value={$visuals.box3d_fill_color} />
             </div>
+            <Dropdown label="Style" bind:value={$visuals.box3d_style} options={BOX_STYLES} />
             <Slider label="Thickness" bind:value={$visuals.box3d_thickness}
                 min={0.5} max={5} step={0.1} format={(v) => v.toFixed(1)} />
         </Section>
