@@ -1,4 +1,4 @@
-# Socrate
+# Socrate forked duh, only did this cuz u made it paid
 
 Tauri 2 + SvelteKit overlay. Same external pipeline as Cherry, rebuilt from scratch around a modular Rust backend.
 
