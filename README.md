@@ -85,3 +85,5 @@ Disclaimer This project is intended strictly for educational and research purpos
 
 
 who tf is falrux am i right
+
+die -falrux
